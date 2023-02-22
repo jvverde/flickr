@@ -36,13 +36,9 @@ close $json_fh;
 my $data = $json->decode($json_string);
 
 # Filter out the hashes whose value of the given key exists on the tag list
-my @filtered_data;
-foreach my $hash (@$data) {
-    my $value = $hash->{$key_name};
-    if (defined $value && $tag_hash{$value}) {
-        push @filtered_data, $hash;
-    }
-}
+
+my @filtered_data = grep { defined $_->{$key_name} && $tag_hash{$_->{$key_name}} } @$data;
+
 
 # Print the filtered data as a JSON array
 print $json->pretty->encode(\@filtered_data);
