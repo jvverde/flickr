@@ -8,9 +8,20 @@ use JSON;
 $\ ="\n";
 
 sub usage {
-    print "Usage: $0 <file1.json> <file2.json> <key> [<type>]\n";
+    print "Usage: $0 <file1.json> <file2.json> <key> [<type>]";
+    print "Filters out elements missing values in <file1.json> and/or <file2.json>";
+    print "and prints the remaining elements in JSON format.";
+    print "Arguments:";
+    print "  <file1.json>   The path to the first JSON file.";
+    print "  <file2.json>   The path to the second JSON file.";
+    print "  <key>          The key to use for comparison.";
+    print "  <type>         Optional. The type of comparison to perform. Defaults to 3.";
+    print "                   1 - Show missing values from <file1.json>.";
+    print "                   2 - Show missing values from <file2.json>.";
+    print "                   3 - Show non-common values.";
     exit;
 }
+
 
 my ($file1, $file2, $key, $type) = @ARGV;
 usage() unless ($file1 && $file2 && $key);
@@ -51,7 +62,9 @@ if ($type == 1) {
             $difference{$element} = 1;
         }
     }
-    @filtered = grep { exists $difference{$_->{$key}} } (@$json1, @$json2);
+    #@filtered = grep { exists $difference{$_->{$key}} } (@$json1, @$json2);
+    my %seen;
+    @filtered = grep { exists $difference{$_->{$key}} && !$seen{$_->{$key}}++ } (@$json1, @$json2);
 }
 
 # Print the filtered elements in JSON format
