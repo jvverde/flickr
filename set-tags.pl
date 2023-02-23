@@ -73,7 +73,7 @@ foreach my $hash (@$data) {
             photo_id => $photo->{id},
             tags => $tags
         });
-        warn "Error while try to set new tag $tags to '$photo->{title}': $response->{error_message}\n\n" and next unless $response->{success};
+        warn "Error while try to set new tags ($tags) to '$photo->{title}': $response->{error_message}\n\n" and next unless $response->{success};
         print "Done new tag $tags on '$photo->{title}'";    
     }
 }
