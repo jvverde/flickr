@@ -10,19 +10,27 @@ use Flickr::API;
 my $help;
 my $filter_pattern = '.*';
 my $dry_run;
+my $sort = 'datetaken';
+my $rev;
 
 GetOptions(
     'h|help' => \$help,
     'f|filter=s' => \$filter_pattern,
     'n|dry-run' => \$dry_run,
+    's|sort' => \$sort,
+    'r|reserve' => \$rev,
 );
 
+die "Error: Sort parameter must be one of 'views', 'upload', or 'lastupdate'\n"
+  unless $sort =~ /^(views|dateupload|lastupdate|datetaken)$/;
+
 if ($help) {
-    print "This script reorder photos on all set of a user";
+    print "This script reorder photos on all sets of current user";
     print "Usage: $0 [OPTIONS]";
     print "Options:";
     print "  -h, --help      Show this help message and exit";
     print "  -f, --filter    Filter photosets by a regular expression pattern";
+    print "  -s, --sort      Sort by views, dateupload, lastupdate or datetaken (the default)";
     print "\nNOTE: It assumes the user's tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'";
     exit;
 }
@@ -49,7 +57,7 @@ while ($page <= $pages) {
     $page = $response->as_hash->{photosets}->{page} + 1;
 }
 
-print map { "Photoset $_->{title} will be sorted by number of views." } @$photosets and exit if $dry_run;
+print map { "Photoset $_->{title} will be sorted by $sort" } @$photosets and exit if $dry_run;
 # Sort photos inside each photoset by number of views
 my $count = 0;
 foreach my $photoset (@$photosets) {
@@ -62,7 +70,7 @@ foreach my $photoset (@$photosets) {
             photoset_id => $photoset->{id},
             per_page => 500,
             page => $page,
-            extras => 'views',
+            extras => 'views,date_upload,date_taken,last_update',
         });
 
         last "Error at get photos from $photoset->{title}: $response->{error_message}" unless $response->{success};
@@ -74,7 +82,15 @@ foreach my $photoset (@$photosets) {
         $page = $response->as_hash->{photoset}->{page} + 1;
     }
 
-    my @sorted_photos = sort { $b->{views} <=> $a->{views} } @$photos;
+
+    my @sorted_photos;
+    if ($sort eq 'datetaken') {
+        @sorted_photos = sort { $a->{$sort} cmp $b->{$sort} } @$photos;
+    } else {
+        @sorted_photos = sort { $a->{$sort} <=> $b->{$sort} } @$photos;
+    }
+    @sorted_photos = reverse @sorted_photos if $rev;
+
     #print Dumper \@sorted_photos;
     my $sorted_ids = join(',', map { $_->{id} } @sorted_photos);
 
@@ -85,5 +101,6 @@ foreach my $photoset (@$photosets) {
         photo_ids => $sorted_ids,
     });
     warn "Error at sort photos in $photoset->{title} ($photoset->{id}): $response->{error_message}" and next unless $response->{success};
-    print "Photoset $photoset->{title} sorted by number of views.";
+    print "Photoset $photoset->{title} sorted by $sort.";
+    #exit;
 }
