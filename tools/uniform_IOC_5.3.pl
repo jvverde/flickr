@@ -16,7 +16,7 @@ foreach my $key (keys %{$input}) {
     my $hash = $input->{$key};
     my $vernacularNames = $hash->{vernacularNames};
     push @output, {
-        "IOC5.3" => $key,
+        "IOC_5.3" => $key,
         species => $key,
         Order => $hash->{ordo},
         Family => $hash->{familia},
