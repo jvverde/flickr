@@ -13,6 +13,7 @@ sub usage {
     print "Usage: $0 [OPTIONS] FILENAME";
     print "Options:";
     print "  -h, --help    Show this help message and exit";
+    print "FILENAME must contains a list of RAW tags to remove";
     print "\nNOTE: It assumes the user's tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'";
     exit;
 }

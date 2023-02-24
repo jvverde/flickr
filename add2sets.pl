@@ -56,7 +56,7 @@ foreach my $set (grep { $_->{title} =~ $re } @$sets) {
 my $count = 0;
 
 # Loop over each hash in the array
-foreach my $hash (reverse @$data) {
+foreach my $hash (@$data) {
 
   # Find all photos tagged with the key from the hash
   my $response = $flickr->execute_method(
