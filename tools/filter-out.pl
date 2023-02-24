@@ -45,6 +45,6 @@ print $json->pretty->encode(\@filtered_data);
 
 sub usage {
     print "Usage: $0 tag_file json_file key_name\n";
-    print "Filters out hashes from a JSON array whose value of the given key exists on the tag list.\n";
+    print "Filter out hashes from a JSON array whose value of the given key exists on the tag list.\n";
     exit;
 }
