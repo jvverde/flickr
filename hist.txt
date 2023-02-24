@@ -14,3 +14,5 @@ perl set-tags.pl -f data/speciesOnFlickr_by_IOC_12.2.json -k IOC_12.2 -t Order -
 perl ../../../tools/filter-out.pl ../../tags.raw ioc5_3.json IOC5.3 > speciesOnFlickr_by_IOC_5.3.json
 perl tools/dupkey.pl IOC_12.2 species data/ioc12_2.json > data/ioc12_2.species.json
 perl tools/dupkey.pl IOC5.3 species data/ioc/5.3/ioc5_3.json > data/ioc/5.3/ioc5_3.species.json
+perl list-raw-tags.pl > data/tags.raw
+perl tools/filter-out.pl data/tags.raw data/ioc12_2.species.json species > data/speciesOnFlickr_by_IOC_12.2.json
