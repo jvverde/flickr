@@ -1,7 +1,7 @@
 echo Generate data/ioc/12.2/ioc.species.json
 echo Convert "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" to data/ioc/12.2/ioc12_2.json
 perl tools/csv2json.pl "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" > data/ioc/12.2/ioc.json
-echo "add key 'species' with the value of IOC_12.2 and store it on data/ioc/12.2/ioc.species.json"
+echo "Add key 'species' with the value of IOC_12.2 and store it on data/ioc/12.2/ioc.species.json"
 perl tools/dupkey.pl IOC_12.2 species data/ioc/12.2/ioc.json > data/ioc/12.2/ioc.species.json
 echo Done data/ioc/12.2/ioc.species.json
 
@@ -10,18 +10,21 @@ echo "Uniform ioc 5.3 old json format"
 perl tools/uniform_IOC_5.3.pl data/ioc/5.3/sources/IOC-multilingual-5.3.json > data/ioc/5.3/ioc.species.json
 echo Done data/ioc/12.2/ioc.species.json
 
+echo Used to add genus to json files
+find . -type f -name '*.species.json' -exec sh -c 'jq "map(. + {genus: (.species | split(\" \")[0])})" "{}" > "$(dirname "{}")/$(basename "{}" .species.json).genus.json"' \;
+
 echo "Get a list of (clean) tags and store in on data/tags.clean"
 perl list-tags.pl > data/tags.clean
 
-echo Generate tagged-by-species.json for each ioc.species.json, using above tags found on flickr
-find data/ioc/ -type f -iname 'ioc.species.json' -printf "%h|%f\n"|
+echo Generate tagged-by-species.json for each ioc.genus.json, using above tags found on flickr
+find data/ioc/ -type f -iname 'ioc.genus.json' -printf "%h|%f\n"|
   while IFS='|' read dir file
   do
     tools/filter-out-by-tagsclean.pl data/tags.clean "$dir/$file" species > "$dir/tagged-by-species.json"
   done
 
-echo Generate tagged-by-English.json for each ioc.species.json, using above tags found on flickr
-find data/ioc/ -type f -iname 'ioc.species.json' -printf "%h|%f\n"|
+echo Generate tagged-by-English.json for each ioc.genus.json, using above tags found on flickr
+find data/ioc/ -type f -iname 'ioc.genus.json' -printf "%h|%f\n"|
   while IFS='|' read dir file
   do
     tools/filter-out-by-tagsclean.pl data/tags.clean "$dir/$file" English > "$dir/tagged-by-English.json"
@@ -47,17 +50,11 @@ find data/ioc/12.2 -type f -iname 'tagged-by-*' -printf "%h|%f\n"|
     jq '[.[] | select(has("IOC_5.3") and ."IOC_5.3" != ."IOC_12.2")]' "$plus" > "$diff"
   done
 
-echo Add tags of 5.3 and 12_2 to photos with same english name but different scientific name
+echo Add tags of 5.3 and 12_2 to photos with same english name but different scientific name. Also add the genus!
 find data/ioc -type f -iname '*-diff.json' -print0 |
-  xargs -r0I{} perl set-tags.pl -f "{}" -k species -t IOC_12.2 -t IOC_5.3
+  xargs -r0I{} perl set-tags.pl -f "{}" -k species -t IOC_12.2 -t IOC_5.3 -t genus
 
 exit
-
-#Use this code if want to add tags IOC_5.3 e IOC_12.2 to all photos
-
-echo Add tags of 5.3 and 12_2 to photos with same english name but different scientific name
-find data/ioc -type f -iname '*-plus.json' -print0 |
-  xargs -r0I{} perl set-tags.pl -f "{}" -k species -t IOC_12.2 -t IOC_5.3
 
 #Use ONLY this code if want to add tags IOC_5.3 e IOC_12.2 as well Order and Family
 

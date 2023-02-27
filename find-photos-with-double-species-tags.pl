@@ -84,7 +84,7 @@ foreach my $tag_chunk (@tag_chunks) {
             #remove duplicated tags;
             my %seen;
             $photos_map{$photo_id}->{tags} = [ grep { !$seen{$_}++ } @{$photos_map{$photo_id}->{tags}} ];
-            print Dumper $photos_map{$photo_id} if @{$photos_map{$photo_id}->{tags}} > 1;
+            #print Dumper $photos_map{$photo_id} if @{$photos_map{$photo_id}->{tags}} > 1;
         }    
         last if $page >= $response->{photos}->{pages};
         $page++;
@@ -95,5 +95,14 @@ foreach my $tag_chunk (@tag_chunks) {
 #print Dumper \%photos_map;
 
 my @dups = grep { @{$_->{tags}} > 1 } values %photos_map;
+my %results;
+foreach my $dup (@dups) {
+    my $k = join '', sort @{$dup->{tags}};
+    $results{$k} //= {
+        tags => $dup->{tags},
+        photos => []
+    };
+    push @{$results{$k}->{photos}}, { $dup->{title} => $dup->{url} }
+}
 
-print Dumper \@dups;
+print Dumper \%results;

@@ -53,7 +53,6 @@ foreach my $hash (@$data) {
     
     # search for photos with the key value and add tags to them
     my $response = $flickr->execute_method('flickr.photos.search', {
-        #user_id => $user_id,
         user_id => 'me',
         tags => $key_value,
         per_page => 500,
@@ -65,7 +64,7 @@ foreach my $hash (@$data) {
     $photos = [ $photos ] unless ref $photos eq 'ARRAY';
 
     foreach my $photo (@$photos) {
-        print Dumper $photo and next unless $photo->{id};
+        print qq|No photos with tag $key_value|, Dumper $photo and next unless $photo->{id};
         my @newtags = grep { $_ } @$hash{@tag_keys};
         my $tags = join ' ', map { qq|"$_"| } @newtags;
         #print "Add $tags to '$photo->{title}'";

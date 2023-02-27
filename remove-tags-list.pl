@@ -42,7 +42,7 @@ foreach my $tag (reverse @alltags) {
         page => 1
     });
 
-    die "Error retrieving photos: $response->{error_message}\n\n" unless $response->{success};
+    warn "Error retrieving photos: $response->{error_message}\n\n" and next unless $response->{success};
 
     next unless defined $response->as_hash() && defined $response->as_hash()->{photos} && ref $response->as_hash()->{photos}->{photo} eq 'ARRAY';
 
