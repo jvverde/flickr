@@ -4,8 +4,11 @@ use Getopt::Long;
 use Flickr::API;
 use Data::Dumper;
 use JSON;
+binmode(STDOUT, ':utf8');
+
 
 $\ = "\n";
+$, = ", ";
 my $json = JSON->new->utf8;
 # import Flickr API configuration
 my $config_file = "$ENV{HOME}/saved-flickr.st";
@@ -20,13 +23,14 @@ sub usage {
 }
 
 # parse command line arguments
-my ($file_name, $key_name, @tag_keys);
+my ($file_name, $key_name, @tag_keys, $match);
 my $rev = undef;
 GetOptions(
     "f|file=s" => \$file_name,
     "k|key=s" => \$key_name,
     "t|tag=s" => \@tag_keys,
     "r|reverse" => \$rev,
+    "m|match=s" => \$match,
     "h|help" => \&usage
 );
 
@@ -48,9 +52,11 @@ $data = [reverse @$data] if defined $rev;
 #my $user_id = $flickr->execute_method('flickr.test.login')->{user}->{id};
 
 # loop through each hash in the array
+
 foreach my $hash (@$data) {
     my $key_value = $hash->{$key_name};
-    
+    next if $match && $key_value !~ m/\Q$match\E/i;
+
     # search for photos with the key value and add tags to them
     my $response = $flickr->execute_method('flickr.photos.search', {
         user_id => 'me',
