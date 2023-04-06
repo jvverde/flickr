@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Getopt::Long;
 use Flickr::API;
+use Data::Dumper;
 
 $\ = "\n";
 my $help;
@@ -37,7 +38,10 @@ while ($page <= $total_pages) {
 
     die "Error: $response->{error_message}" unless $response->{success};
 
-    push @$sets, @{$response->as_hash->{photosets}->{photoset}};
+    #print Dumper $response->as_hash->{photosets}->{photoset};
+    my $s = $response->as_hash->{photosets}->{photoset};
+    $s = [ $s ] unless ref $s eq 'ARRAY';
+    push @$sets, @$s;
     $total_pages = $response->as_hash->{photosets}->{pages};
     $page++;
 }
