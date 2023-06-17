@@ -44,16 +44,28 @@ foreach my $tag (reverse @alltags) {
 
     warn "Error retrieving photos: $response->{error_message}\n\n" and next unless $response->{success};
 
-    next unless defined $response->as_hash() && defined $response->as_hash()->{photos} && ref $response->as_hash()->{photos}->{photo} eq 'ARRAY';
+    my $data = $response->as_hash();
 
-    my @ids = map { $_->{id} } @{$response->as_hash()->{photos}->{photo}};
+    warn "No data in answer for tag $tag" and next unless defined $data && defined $data->{photos};
+
+    my $photos = $data->{photos}->{photo};
+    next unless defined $photos;
+
+    $photos = [$photos] if 'ARRAY' ne ref $photos;
+    my @ids = grep { $_ } map { $_->{id} } @$photos;
 
     foreach my $id (@ids) {
         my $response = $flickr->execute_method('flickr.tags.getListPhoto', { photo_id => $id });
-        #my $response = $flickr->execute_method('flickr.photos.getInfo', { photo_id => $id });
-        next unless defined $response->as_hash() && defined $response->as_hash()->{photo} && ref $response->as_hash()->{photo}->{tags}->{tag} eq 'ARRAY';
 
-        my @phototags = grep {$_->{content} && $_->{content} eq $tag } @{$response->as_hash()->{photo}->{tags}->{tag}};
+        warn "Error retrieving tags for photo $id ($tag): $response->{error_message}\n" and next unless $response->{success};
+
+        my $data = $response->as_hash();
+
+        next unless defined $data && defined $data->{photo};
+
+        my $tags = $data->{photo}->{tags}->{tag};
+        $tags = [$tags] if 'ARRAY' ne ref $tags;
+        my @phototags = grep {$_->{content} && $_->{content} eq $tag } @$tags;
         foreach my $phototag (@phototags) {
             print "I am ready to remove $phototag->{content} with id $phototag->{id}";
             my $response = $flickr->execute_method('flickr.photos.removeTag', { tag_id => $phototag->{id} });
@@ -61,6 +73,4 @@ foreach my $tag (reverse @alltags) {
             print "Error removing tag: $response->{error_message}";
         }
     }
-
-    # print Dumper \@ids;
 }

@@ -17,12 +17,12 @@ GetOptions(
     'h|help' => \$help,
     'f|filter=s' => \$filter_pattern,
     'n|dry-run' => \$dry_run,
-    's|sort' => \$sort,
+    's|sort=s' => \$sort,
     'r|reserve' => \$rev,
 );
 
-die "Error: Sort parameter must be one of 'views', 'upload', or 'lastupdate'\n"
-  unless $sort =~ /^(views|dateupload|lastupdate|datetaken)$/;
+die "Error: Sort parameter ('$sort') must be one of 'views', 'upload', 'lastupdate', '.+:seq'\n"
+  unless $sort =~ /^(views|dateupload|lastupdate|datetaken|.+:seq)$/;
 
 if ($help) {
     print "This script reorder photos on all sets of current user";
@@ -70,7 +70,7 @@ foreach my $photoset (@$photosets) {
             photoset_id => $photoset->{id},
             per_page => 500,
             page => $page,
-            extras => 'views,date_upload,date_taken,last_update',
+            extras => 'views,date_upload,date_taken,last_update,machine_tags',
         });
 
         last "Error at get photos from $photoset->{title}: $response->{error_message}" unless $response->{success};
@@ -82,13 +82,22 @@ foreach my $photoset (@$photosets) {
         $page = $response->as_hash->{photoset}->{page} + 1;
     }
 
-
     my @sorted_photos;
-    if ($sort eq 'datetaken') {
+    if ($sort =~ /.+:seq/) {
+        $sort =~ s/[^a-z0-9:]//i; # Convert to flickr canonical
+        foreach my $photo (@$photos) {
+            my ($seq) = $photo->{machine_tags} =~ /$sort=(\d+)/i;
+            warn "Photo $photo->{title} ($photo->{id}) don't have '$sort' machine tage" unless defined $seq;
+            $seq //= -1;           
+            $photo->{seq} = $seq;
+        }
+        @sorted_photos = sort { $a->{seq} <=> $b->{seq} } @$photos;
+    } elsif ($sort eq 'datetaken') {
         @sorted_photos = sort { $a->{$sort} cmp $b->{$sort} } @$photos;
     } else {
         @sorted_photos = sort { $a->{$sort} <=> $b->{$sort} } @$photos;
     }
+
     @sorted_photos = reverse @sorted_photos if $rev;
 
     #print Dumper \@sorted_photos;

@@ -23,7 +23,7 @@ sub usage {
 }
 
 # parse command line arguments
-my ($file_name, $key_name, @tag_keys, $match);
+my ($file_name, $key_name, @tag_keys, $match, $list);
 my $rev = undef;
 GetOptions(
     "f|file=s" => \$file_name,
@@ -31,6 +31,7 @@ GetOptions(
     "t|tag=s" => \@tag_keys,
     "r|reverse" => \$rev,
     "m|match=s" => \$match,
+    "l|list=s", => \$list,
     "h|help" => \&usage
 );
 
@@ -67,13 +68,18 @@ foreach my $hash (@$data) {
     warn "Error retrieving photos: $response->{error_message}\n\n" and next unless $response->{success};
 
     my $photos = $response->as_hash()->{photos}->{photo};
-    $photos = [ $photos ] unless ref $photos eq 'ARRAY';
+    $photos = [ $photos ] unless ref $photos eq 'ARRAY'; #Just in case for a limit situation when there is only 1 photo
 
     foreach my $photo (@$photos) {
         print qq|No photos with tag $key_value|, Dumper $photo and next unless $photo->{id};
         my @newtags = grep { $_ } @$hash{@tag_keys};
         my $tags = join ' ', map { qq|"$_"| } @newtags;
-        #print "Add $tags to '$photo->{title}'";
+        if ( defined $list) {
+            $tags = join ' ', $tags,
+            qq|$list:seq="$hash->{'Seq.'}"|,
+            qq|$list:binomial="$hash->{'species'}"|, 
+            qq|$list:name="$hash->{'English'}"|;
+        }
         my $response = $flickr->execute_method('flickr.photos.addTags', {
             photo_id => $photo->{id},
             tags => $tags

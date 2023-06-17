@@ -95,3 +95,22 @@ jq '[.[]| {name: .English, species: .species}]' data/this.IOC5_3\(English\).spec
 echo "Buy from ioc12.2 keys=> values and merge ir on speciesOnFlickr_by_English\(IOC_5.3"
 perl tools/buy-data-from.pl English data/speciesOnFlickr_by_English\(IOC_5.3\).json data/ioc12_2.species.json  > data/speciesOnFlickr_by_English\(IOC_5.3\)+json12_2.json
 jq '.[] | select(has("IOC_12.2") and ."IOC5.3" != ."IOC_12.2")' data/speciesOnFlickr_by_English\(IOC_5.3\)+json12_2.json > data/diffs.json
+jq '[.[]|select(has("Portuguese"))]| map(. + {FirstPortuguese: (."Portuguese" | split("-")[0])})' data/ioc/13.1/ioc.genus+lastEnglish.json > data/ioc/13.1/ioc.genus+lastEnglish+FirstPortuguese.json
+
+
+jq '[.[]|select(has("Portuguese"))]| map(. + {FirstPortuguese: (."Portuguese" | split("-")[0])})' data/ioc/13.1/ioc.genus+lastEnglish.json > data/ioc/13.1/ioc.genus+lastEnglish+FirstPortuguese.json
+
+jq '
+  def firstDash(k): if has(k) then {("First" + k): (.[k]|split("-")[0])} else null end; 
+  def firstWord(k): if has(k) then {("First" + k): (.[k]|split(" ")[0])} else null end; 
+  def lastWord(k): if has(k) then {("Last" + k): (.[k]|split(" ")[-1])} else null end; 
+  def genus(k): if has(k) then {("genus"): (.[k]|split(" ")[0])} else null end;
+  map (. + { English: ."English name"} )| 
+  map(.
+    + firstDash("Portuguese")
+    + firstWord("Spanish")
+    + firstWord("French")
+    + lastWord("English")
+    + genus("species")
+  )
+' data/ioc/13.1/ioc.species.json
