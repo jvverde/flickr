@@ -88,10 +88,13 @@ foreach my $photoset (@$photosets) {
         foreach my $photo (@$photos) {
             my ($seq) = $photo->{machine_tags} =~ /$sort=(\d+)/i;
             warn "Photo $photo->{title} ($photo->{id}) don't have '$sort' machine tage" unless defined $seq;
-            $seq //= -1;           
+            $seq //= 100000;           
             $photo->{seq} = $seq;
         }
-        @sorted_photos = sort { $a->{seq} <=> $b->{seq} } @$photos;
+        @sorted_photos = sort {
+            return $b->{datetaken} cmp $a->{datetaken} if ($a->{seq} == $b->{seq}) ;
+            $a->{seq} <=> $b->{seq}
+        } @$photos;
     } elsif ($sort eq 'datetaken') {
         @sorted_photos = sort { $a->{$sort} cmp $b->{$sort} } @$photos;
     } else {

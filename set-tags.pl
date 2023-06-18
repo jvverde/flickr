@@ -75,7 +75,7 @@ foreach my $hash (@$data) {
         my @newtags = grep { $_ } @$hash{@tag_keys};
         my $tags = join ' ', map { qq|"$_"| } @newtags;
         if ( defined $list) {
-            $tags = join ' ', $tags,
+            $tags = join ' ', $tags, $list,
             qq|$list:seq="$hash->{'Seq.'}"|,
             qq|$list:binomial="$hash->{'species'}"|, 
             qq|$list:name="$hash->{'English'}"|;
