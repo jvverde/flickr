@@ -7,7 +7,8 @@ echo Done data/ioc/12.2/ioc.species.json
 
 echo Generate data/ioc/5.3/ioc.species.json
 echo "Uniform ioc 5.3 old json format"
-perl tools/uniform_IOC_5.3.pl data/ioc/5.3/sources/IOC-multilingual-5.3.json > data/ioc/5.3/ioc.species.json
+#perl tools/uniform_IOC_5.3.pl data/ioc/5.3/sources/IOC-multilingual-5.3.json > data/ioc/5.3/ioc.species.json
+perl tools/uniform_IOC_5.3.pl data/ioc/5.3/sources/IOC-multilingual-5.3+Seq.json > data/ioc/5.3/ioc.species.json
 echo Done data/ioc/12.2/ioc.species.json
 
 echo Used to add genus to json files
@@ -125,4 +126,4 @@ jq '
   )
 ' data/ioc/5.3/ioc.species.json > data/ioc/5.3/ioc.genus+names-without-Seq.json
 
-jq '.|= reduce range(0;length) as $i (.; .[$i]."Seq." = 1+$i)' data/ioc/5.3/ioc.genus+names-without-Seq.json > data/ioc/5.3/ioc.genus+names.json
+#jq '.|= reduce range(0;length) as $i (.; .[$i]."Seq." = 1+$i)' data/ioc/5.3/ioc.genus+names-without-Seq.json > data/ioc/5.3/ioc.genus+names.json
