@@ -33,13 +33,16 @@ die "File not found: $filename\n" unless -e $filename;
 # Read the list of tags from the file
 my @alltags = read_file($filename, chomp => 1, binmode => ':utf8');
 
+my %taglist = map { $_ => 1 } @alltags;
 
 foreach my $tag (reverse @alltags) {
     print "Search for tag '$tag'";
+    my ($mtag) = $tag =~ /(^[^:]+).+/;
+    print "mtag=$mtag";
     my $response = $flickr->execute_method('flickr.photos.search', {
         user_id => 'me',
-        tags => $tag, #não é fiável!
-        #text => $tag,
+        # tags => $tag, #não é fiável!
+        text => $mtag,
         per_page => 500,
         page => 1
     });
@@ -67,7 +70,8 @@ foreach my $tag (reverse @alltags) {
 
         my $tags = $data->{photo}->{tags}->{tag};
         $tags = [$tags] if 'ARRAY' ne ref $tags;
-        my @phototags = grep {$_->{content} && $_->{content} eq $tag  } @$tags;
+        my @phototags = grep { exists $taglist{$_->{content}} } @$tags;
+
         foreach my $phototag (@phototags) {
             print "I am ready to remove $phototag->{content} with id $phototag->{id}";
             my $response = $flickr->execute_method('flickr.photos.removeTag', { tag_id => $phototag->{id} });
