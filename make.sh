@@ -114,3 +114,15 @@ jq '
     + genus("species")
   )
 ' data/ioc/13.1/ioc.species.json
+
+jq '
+  def firstDash(k): if has(k) then {("First" + k): (.[k]|split("-")[0])} else null end;
+  def firstWord(k): if has(k) then {("First" + k): (.[k]|split(" ")[0])} else null end;
+  def lastWord(k): if has(k) then {("Last" + k): (.[k]|split(" ")[-1])} else null end;
+  def genus(k): if has(k) then {("genus"): (.[k]|split(" ")[0])} else null end;
+  map(.
+     + genus("species") + firstDash("Portuguese") + lastWord("English")
+  )
+' data/ioc/5.3/ioc.species.json > data/ioc/5.3/ioc.genus+names-without-Seq.json
+
+jq '.|= reduce range(0;length) as $i (.; .[$i]."Seq." = 1+$i)' data/ioc/5.3/ioc.genus+names-without-Seq.json > data/ioc/5.3/ioc.genus+names.json

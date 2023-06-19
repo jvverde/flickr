@@ -20,6 +20,7 @@ foreach my $key (keys %{$input}) {
         species => $key,
         Order => $hash->{ordo},
         Family => $hash->{familia},
+        'Seq.' => $hash->{position},
         map { $_ => $vernacularNames->{$_} } keys %{$vernacularNames}
     };
 }
