@@ -2,6 +2,7 @@
 *.json
 *.xlsx
 *.csv
+*.log
 data/**
 !data/**/
 !data/**/*.pl
