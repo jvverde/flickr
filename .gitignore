@@ -1,4 +1,8 @@
 *.txt
 *.json
-data/
+*.xlsx
+*.csv
+data/**
+!data/**/
+!data/**/*.pl
 .env
