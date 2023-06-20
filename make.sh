@@ -1,3 +1,4 @@
+exit #Don't let it run. Is just a bunch of examples
 echo Generate data/ioc/12.2/ioc.species.json
 echo Convert "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" to data/ioc/12.2/ioc12_2.json
 perl tools/csv2json.pl "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" > data/ioc/12.2/ioc.json

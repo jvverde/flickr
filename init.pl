@@ -1,5 +1,4 @@
 #!/usr/bin/perl
-
 use Flickr::API;
 use Term::ReadLine;
 use Data::Dumper;
