@@ -3,6 +3,7 @@
 *.xlsx
 *.csv
 *.log
+*.zip
 data/**
 !data/**/
 !data/**/*.pl
