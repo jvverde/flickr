@@ -1,3 +1,4 @@
+#!/usr/bin/perl
 use strict;
 use warnings;
 use Getopt::Long;
@@ -8,9 +9,9 @@ binmode(STDOUT, ':utf8');
 $\ = "\n";
 
 sub usage {
-    print "This script removes tags from the current user's photos.";
+    print "Find photos contaning a list of tags but not containing a list of  exclude tags";
     print "Usage: $0 [OPTIONS] FILENAME";
-    print "Options:.....";
+    print "Options:\n\t\t-i tag[-i tag[...]] -e tag [-e tag[...]]\n\t\t-h\thelp";
     print "Example: perl $0 -e ioc131 -i ioc53";
     print "\nNOTE: It assumes the user's tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'";
     exit;
@@ -23,6 +24,7 @@ GetOptions(
     "i|inc=s" => \@inc,
     "h|help" => \&usage
 );
+usage() unless @inc or @exc;
 
 my $config_file = "$ENV{HOME}/saved-flickr.st";
 my $flickr = Flickr::API->import_storable_config($config_file);
