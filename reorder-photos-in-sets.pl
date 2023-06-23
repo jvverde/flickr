@@ -49,7 +49,7 @@ while ($page <= $pages) {
         page => $page,
     });
 
-    die "Error: $response->{error_message}" unless $response->{success};
+    warn "Error: $response->{error_message}" and redo unless $response->{success};
 
     push @$photosets, grep { $_->{title} =~ $re } @{$response->as_hash->{photosets}->{photoset}};
     $pages = $response->as_hash->{photosets}->{pages};
@@ -72,7 +72,7 @@ foreach my $photoset (@$photosets) {
             extras => 'views,date_upload,date_taken,last_update,machine_tags',
         });
 
-        last "Error at get photos from $photoset->{title}: $response->{error_message}" unless $response->{success};
+        warn "Error at get photos from $photoset->{title}: $response->{error_message}" and redo unless $response->{success};
         my $bunch = $response->as_hash->{photoset}->{photo};
         $bunch = [ $bunch ] unless 'ARRAY' eq ref $bunch;
         #print Dumper $bunch;

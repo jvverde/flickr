@@ -1,4 +1,4 @@
-exit #Don't let it run. Is just a bunch of examples
+ exit #Don't let it run. Is just a bunch of examples
 echo Generate data/ioc/12.2/ioc.species.json
 echo Convert "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" to data/ioc/12.2/ioc12_2.json
 perl tools/csv2json.pl "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" > data/ioc/12.2/ioc.json
@@ -128,3 +128,8 @@ jq '
 ' data/ioc/5.3/ioc.species.json > data/ioc/5.3/ioc.genus+names-without-Seq.json
 
 #jq '.|= reduce range(0;length) as $i (.; .[$i]."Seq." = 1+$i)' data/ioc/5.3/ioc.genus+names-without-Seq.json > data/ioc/5.3/ioc.genus+names.json
+
+jq 'map(. 
+  + { familyEnglish: (.FAMILY|capture("\\((?<fam>[^)(]+)").fam) } 
+  + { familyName: (.FAMILY|capture("(?<fam>^[^)( ]+)").fam)})
+' data/eBird/v2022/ebird.species.json > data/eBird/v2022/ebird.species+family.json
