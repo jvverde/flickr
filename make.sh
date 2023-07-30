@@ -133,3 +133,6 @@ jq 'map(.
   + { familyEnglish: (.FAMILY|capture("\\((?<fam>[^)(]+)").fam) } 
   + { familyName: (.FAMILY|capture("(?<fam>^[^)( ]+)").fam)})
 ' data/eBird/v2022/ebird.species.json > data/eBird/v2022/ebird.species+family.json
+#perl set-tags.pl -f data/eBird/v2022/ebird.species+family.json -k SCI_NAME -t ORDER1 -t familyName -t familyEnglish -t PRIMARY_COM_NAME -m "Phoenicurus frontalis"
+#perl set-tags.pl -f data/ioc/13.1/ioc.genus+names.json -t species -k English -t Order -t Family -t genus -t Portuguese -t French -t Spanish -t LastEnglish -t FirstPortuguese -t FirstSpanish -t FirstFrench -l IOC_131 -m "Blue-fronted Redstart"
+#perl set-tags.pl -f data/ioc/5.3/ioc.genus+names.json -k English -t Order -t Family -t genus -t species -l IOC_53 -m 'Blue-fronted Redstart'
