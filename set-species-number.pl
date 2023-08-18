@@ -61,5 +61,4 @@ foreach my $species (grep { $counting->{$_}->{n} > $min } keys %$counting) {
     warn "Error while try to set new machine:tag ($tag) to '$species': $response->{error_message}\n\n" and next unless $response->{success};
     print "Done new machine:tag $tag on '$species'";
   }
-  last;
 }
