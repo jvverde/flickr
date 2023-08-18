@@ -32,11 +32,12 @@ sub readfile {
 }
 
 my ($file_name);
-my $min = 0;
+my ($min, $max) = (0, 20000);
 
 GetOptions(
   "f|file=s" => \$file_name,
-  "m=i" => \$min,
+  "min=i" => \$min,
+  "max=i" => \$max,
   "h|help" => \&usage
 );
 
@@ -47,7 +48,7 @@ my $json_text = readfile($file_name);
 # parse the json text to perl data structure
 my $counting = $json->decode($json_text);
 
-foreach my $species (grep { $counting->{$_}->{n} > $min } keys %$counting) {
+foreach my $species (grep { $counting->{$_}->{n} > $min && $counting->{$_}->{n} < $max } keys %$counting) {
   my $elem = $counting->{$species};
   my $n = $elem->{n};
   my $tag = qq|species:number="$n"|;
@@ -58,7 +59,7 @@ foreach my $species (grep { $counting->{$_}->{n} > $min } keys %$counting) {
         tags => $tag
       })
     } or warn "$@" and redo;
-    warn "Error while try to set new machine:tag ($tag) to '$species': $response->{error_message}\n\n" and next unless $response->{success};
+    warn "Error while try to set new machine:tag ($tag) to '$species': $response->{error_message}\n\n" and redo unless $response->{success};
     print "Done new machine:tag $tag on '$species'";
   }
 }
