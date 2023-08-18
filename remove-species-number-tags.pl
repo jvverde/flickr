@@ -32,23 +32,20 @@ die "No filename provided.\n" unless $filename;
 die "File not found: $filename\n" unless -e $filename;
 
 # Read the list of tags from the file
-my @alltags = read_file($filename, chomp => 1, binmode => ':utf8');
+my @alltags = grep { /species:number=/ } read_file($filename, chomp => 1, binmode => ':utf8');
 
 my %taglist = map { $_ => 1 } @alltags;
 
-foreach my $tag (reverse @alltags) {
+foreach my $tag (sort @alltags) {
     print "Search for tag '$tag'";
-    my ($mtag) = $tag =~ /(^[^:]+).+/;
-    print "mtag=$mtag";
     my $response = $flickr->execute_method('flickr.photos.search', {
         user_id => 'me',
-        #$tags => $tag, #não é fiável!
-        text => $mtag,
+        tags => $tag,
         per_page => 500,
         page => 1
     });
 
-    warn "Error retrieving photos: $response->{error_message}\n\n" and next unless $response->{success};
+    warn "Error retrieving photos: $response->{error_message}\n\n" and redo unless $response->{success};
 
     my $data = $response->as_hash();
 
@@ -63,7 +60,7 @@ foreach my $tag (reverse @alltags) {
     foreach my $id (@ids) {
         my $response = $flickr->execute_method('flickr.tags.getListPhoto', { photo_id => $id });
 
-        warn "Error retrieving tags for photo $id ($tag): $response->{error_message}\n" and next unless $response->{success};
+        warn "Error retrieving tags for photo $id ($tag): $response->{error_message}\n" and redo unless $response->{success};
 
         my $data = $response->as_hash();
 
@@ -74,10 +71,9 @@ foreach my $tag (reverse @alltags) {
         my @phototags = grep { exists $taglist{$_->{content}} } @$tags;
 
         foreach my $phototag (@phototags) {
-            print "I am ready to remove $phototag->{content} with id $phototag->{id}";
+            print "I am going to remove tag '$phototag->{content}' on photo with id $phototag->{id}";
             my $response = $flickr->execute_method('flickr.photos.removeTag', { tag_id => $phototag->{id} });
-            next if $response->{success};
-            print "Error removing tag: $response->{error_message}";
+            warn "Error removing tag: $response->{error_message}" and redo unless $response->{success};
         }
     }
 }
