@@ -10,7 +10,7 @@ binmode(STDOUT, ':utf8');
 $\ = "\n";
 
 sub usage {
-    print "This script removes tags from the current user's photos.";
+    print "This script removes machine tags from the current user's photos.";
     print "Usage: $0 [OPTIONS] FILENAME";
     print "Options:";
     print "  -h, --help    Show this help message and exit";

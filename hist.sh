@@ -21,3 +21,7 @@ perl list-raw-tags.pl > data/tags.raw
 perl tools/filter-out.pl data/tags.raw data/ioc12_2.species.json species > data/speciesOnFlickr_by_IOC_12.2.json
 perl tools/filter-out.pl data/tags.raw data/ioc12_2.species.json English > data/speciesOnFlickr_by_EnglishName.json
 perl tools/filter-out.pl data/tags.raw data/ioc/5.3/ioc5_3.species.json species > data/speciesOnFlickr_by_IOC_5.3.json
+#19-05-2024
+ ./add_first-or-last_name.sh data/ioc/14.1/ioc.genus.json |tee data/ioc/14.1/ioc.genus+names.json
+
+ ./tools/by-photo-id.pl data/species-counting.ioc141.json |jq 'with_entries(select(.value | length > 1))'|jq 'with_entries(.key |= "https://www.flickr.com/photos/jvverde/" + .)'

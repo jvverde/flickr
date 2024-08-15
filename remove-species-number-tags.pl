@@ -70,10 +70,12 @@ foreach my $tag (sort @alltags) {
         $tags = [$tags] if 'ARRAY' ne ref $tags;
         my @phototags = grep { exists $taglist{$_->{content}} } @$tags;
 
+        my $retry = 0;
         foreach my $phototag (@phototags) {
             print "I am going to remove tag '$phototag->{content}' on photo with id $phototag->{id}";
             my $response = $flickr->execute_method('flickr.photos.removeTag', { tag_id => $phototag->{id} });
-            warn "Error removing tag: $response->{error_message}" and redo unless $response->{success};
+            warn "Error removing tag: $response->{error_message}" and ++$retry and redo unless $response->{success} or $retry > 10;
+            $retry = 0;
         }
     }
 }

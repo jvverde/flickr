@@ -1,6 +1,6 @@
- exit #Don't let it run. Is just a bunch of examples
-echo Generate data/ioc/12.2/ioc.species.json
-echo Convert "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" to data/ioc/12.2/ioc12_2.json
+exit #Don't let it run. Is just a bunch of examples
+echo "Generate data/ioc/12.2/ioc.species.json  -- don't forget to use utf-8"
+echo Convert "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" to data/ioc/12.2/ioc12_2.json 
 perl tools/csv2json.pl "data/ioc/12.2/sources/Multiling IOC 12.2_b.csv" > data/ioc/12.2/ioc.json
 echo "Add key 'species' with the value of IOC_12.2 and store it on data/ioc/12.2/ioc.species.json"
 perl tools/dupkey.pl IOC_12.2 species data/ioc/12.2/ioc.json > data/ioc/12.2/ioc.species.json
@@ -136,3 +136,9 @@ jq 'map(.
 #perl set-tags.pl -f data/eBird/v2022/ebird.species+family.json -k SCI_NAME -t ORDER1 -t familyName -t familyEnglish -t PRIMARY_COM_NAME -m "Phoenicurus frontalis"
 #perl set-tags.pl -f data/ioc/13.1/ioc.genus+names.json -t species -k English -t Order -t Family -t genus -t Portuguese -t French -t Spanish -t LastEnglish -t FirstPortuguese -t FirstSpanish -t FirstFrench -l IOC_131 -m "Blue-fronted Redstart"
 #perl set-tags.pl -f data/ioc/5.3/ioc.genus+names.json -k English -t Order -t Family -t genus -t species -l IOC_53 -m 'Blue-fronted Redstart'
+
+
+./tools/csv2json.pl data/ioc/14.1/sources/Multiling\ IOC\ 14.1.csv > ./data/ioc/14.1/ioc.json
+ perl tools/dupkey.pl IOC_14.1 species data/ioc/14.1/ioc.json > data/ioc/14.1/ioc.species.json
+  find data/ioc/14.1/ -type f -name '*.species.json' -exec echo sh -c 'jq "map(. + {genus: (.species | split(\" \")[0])})" "{}" > "$(dirname "{}")/$(basename "{}" .species.json).genus.json"' \;
+./add_first-or-last_name.sh data/ioc/14.1/ioc.genus.json |tee data/ioc/14.1/ioc.genus+names.json

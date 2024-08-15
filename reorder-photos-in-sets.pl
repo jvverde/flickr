@@ -17,19 +17,19 @@ GetOptions(
     'f|filter=s' => \$filter_pattern,
     'n|dry-run' => \$dry_run,
     's|sort=s' => \$sort,
-    'r|reserve' => \$rev,
+    'r|reverse' => \$rev,
 );
 
 die "Error: Sort parameter ('$sort') must be one of 'views', 'upload', 'lastupdate', '.+:seq'\n"
   unless $sort =~ /^(views|dateupload|lastupdate|datetaken|.+:seq)$/;
 
 if ($help) {
-    print "This script reorder photos on all sets of current user";
+    print "This script reorders photos in all sets of the current user";
     print "Usage: $0 [OPTIONS]";
     print "Options:";
     print "  -h, --help      Show this help message and exit";
     print "  -f, --filter    Filter photosets by a regular expression pattern";
-    print "  -s, --sort      Sort by views, dateupload, lastupdate or datetaken (the default)";
+    print "  -s, --sort      Sort by views, dateupload, lastupdate, or datetaken (the default)";
     print "\nNOTE: It assumes the user's tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'";
     exit;
 }
@@ -57,10 +57,10 @@ while ($page <= $pages) {
 }
 
 print map { "Photoset $_->{title} will be sorted by $sort" } @$photosets and exit if $dry_run;
-# Sort photos inside each photoset by number of views
+
+# Sort photos inside each photoset
 my $count = 0;
 foreach my $photoset (@$photosets) {
-    # print Dumper $photoset;
     my $photos = [];
     my $page = 1;
     my $pages = 1;
@@ -75,7 +75,6 @@ foreach my $photoset (@$photosets) {
         warn "Error at get photos from $photoset->{title}: $response->{error_message}" and redo unless $response->{success};
         my $bunch = $response->as_hash->{photoset}->{photo};
         $bunch = [ $bunch ] unless 'ARRAY' eq ref $bunch;
-        #print Dumper $bunch;
         push @$photos, @$bunch;
         $pages = $response->as_hash->{photoset}->{pages};
         $page = $response->as_hash->{photoset}->{page} + 1;
@@ -83,16 +82,14 @@ foreach my $photoset (@$photosets) {
 
     my @sorted_photos;
     if ($sort =~ /.+:seq/) {
-        $sort =~ s/[^a-z0-9:]//i; # Convert to flickr canonical
+        $sort =~ s/[^a-z0-9:]//i;  # Convert to Flickr canonical form
         foreach my $photo (@$photos) {
             my ($seq) = $photo->{machine_tags} =~ /$sort=(\d+)/i;
-            warn "Photo $photo->{title} ($photo->{id}) don't have '$sort' machine tage" unless defined $seq;
-            $seq //= 100000;           
-            $photo->{seq} = $seq;
+            $photo->{seq} = defined $seq ? $seq : 100000;  # Assign a high number if tag not found
         }
         @sorted_photos = sort {
-            return $b->{datetaken} cmp $a->{datetaken} if ($a->{seq} == $b->{seq}) ;
-            $a->{seq} <=> $b->{seq}
+            return $a->{seq} <=> $b->{seq} if $a->{seq} != $b->{seq};
+            return $a->{datetaken} cmp $b->{datetaken};  # Fallback to datetaken if seq is the same
         } @$photos;
     } elsif ($sort eq 'datetaken') {
         @sorted_photos = sort { $a->{$sort} cmp $b->{$sort} } @$photos;
@@ -102,16 +99,12 @@ foreach my $photoset (@$photosets) {
 
     @sorted_photos = reverse @sorted_photos if $rev;
 
-    #print Dumper \@sorted_photos;
     my $sorted_ids = join(',', map { $_->{id} } @sorted_photos);
 
-    # Reorder photoset using sorted photo IDs
-    #print $sorted_ids;
     my $response = $flickr->execute_method('flickr.photosets.reorderPhotos', {
         photoset_id => $photoset->{id},
         photo_ids => $sorted_ids,
     });
     warn "Error at sort photos in $photoset->{title} ($photoset->{id}): $response->{error_message}" and next unless $response->{success};
     print "Photoset $photoset->{title} sorted by $sort.";
-    #exit;
 }

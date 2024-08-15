@@ -6,18 +6,17 @@ use Flickr::API;
 use Data::Dumper;
 use JSON;
 use Time::Local;
-use URI::Escape;
 binmode(STDOUT, ':utf8');
 
 $\ = "\n";
 $, = ", ";
 my $json = JSON->new->utf8;
 
-# Import Flickr API configuration
+# import Flickr API configuration
 my $config_file = "$ENV{HOME}/saved-flickr.st";
 my $flickr = Flickr::API->import_storable_config($config_file);
 
-# Usage subroutine to print help message
+# usage subroutine to print help message
 sub usage {
     print "Usage:\n";
     print "  $0 --file jsonfile --key keyname --tag tagkey1 [--tag tagkey2 ...]\n";
@@ -25,7 +24,7 @@ sub usage {
     exit;
 }
 
-# Parse command line arguments
+# parse command line arguments
 my ($file_name, $key_name, @tag_keys, $match, $list);
 my $rev = undef;
 my $days = undef;  # Option for number of days
@@ -42,7 +41,14 @@ GetOptions(
 
 usage() unless $file_name && $key_name && @tag_keys;
 
-# Read the data from json file
+# Calculate the minimum upload date if the days option is provided
+my $min_upload_date = undef;
+if (defined $days) {
+    my $time = time - ($days * 24 * 60 * 60);  # Convert days to seconds and subtract from the current time
+    $min_upload_date = $time;  # Unix timestamp for min_upload_date
+}
+
+# read the data from json file
 my $json_text = do {
     open(my $json_fh, "<", $file_name)
         or die("Can't open $file_name: $!");
@@ -50,63 +56,16 @@ my $json_text = do {
     <$json_fh>
 };
 
-# Parse the JSON text to a Perl data structure
+# parse the json text to perl data structure
 my $data = $json->decode($json_text);
 $data = [reverse @$data] if defined $rev;
 
-# Function to convert a tag to Flickr's canonical form
-sub canonicalize_tag {
-    my $tag = shift;
-    #$tag =~ s/[^a-z0-9]/_/gi;      # Replace non-alphanumeric characters with underscores
-    $tag =~ s/[^a-z0-9:]//gi;
-    $tag = lc($tag);                # Convert to lowercase
-    return $tag;
-}
-
-# Calculate the minimum upload date if the days option is provided
-my $min_upload_date = undef;
-if (defined $days) {
-    my $time = time - ($days * 24 * 60 * 60);  # Convert days to seconds and subtract from the current time
-    $min_upload_date = $time;  # Unix timestamp for min_upload_date
-
-    # If the days option is provided, pre-fetch all photos uploaded in the last $days
-    my %valid_tags;
-    my $page = 1;
-    my $pages = 1;
-    
-    while ($page <= $pages) {
-        my $response = $flickr->execute_method('flickr.photos.search', {
-            user_id => 'me',
-            min_upload_date => $min_upload_date,
-            per_page => 500,
-            page => $page,
-            extras => 'tags',
-        });
-
-        warn "Error retrieving photos: $response->{error_message}\n\n" and last unless $response->{success};
-
-        my $photos = $response->as_hash()->{photos}->{photo};
-        $photos = [ $photos ] unless ref $photos eq 'ARRAY';  # Handle the case where there is only 1 photo
-
-        # Collect all unique raw tags from the photos
-        foreach my $photo (@$photos) {
-            my @tags = split ' ', $photo->{tags};  # Split tags by spaces
-            $valid_tags{$_} = 1 for @tags;
-        }
-
-        $pages = $response->as_hash()->{photos}->{pages};
-        $page++;
-    }
-
-    # Filter @$data array if the key of each element is not one of the raw tags (converted to canonical form)
-    @$data = grep { exists $valid_tags{ canonicalize_tag($_->{$key_name}) } } @$data;
-}
-# Loop through each hash in the filtered array
+# loop through each hash in the array
 foreach my $hash (@$data) {
     my $key_value = $hash->{$key_name};
     next if $match && $key_value !~ m/\Q$match\E/i;
 
-    # Search for photos with the key value and add tags to them
+    # search for photos with the key value and add tags to them
     my %search_params = (
         user_id => 'me',
         tags => $key_value,
