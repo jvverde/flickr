@@ -89,7 +89,7 @@ foreach my $photoset (@$photosets) {
         }
         @sorted_photos = sort {
             return $a->{seq} <=> $b->{seq} if $a->{seq} != $b->{seq};
-            return $a->{datetaken} cmp $b->{datetaken};  # Fallback to datetaken if seq is the same
+            return $b->{datetaken} cmp $a->{datetaken};  # Fallback to datetaken if seq is the same
         } @$photos;
     } elsif ($sort eq 'datetaken') {
         @sorted_photos = sort { $a->{$sort} cmp $b->{$sort} } @$photos;
