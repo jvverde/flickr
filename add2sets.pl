@@ -4,13 +4,23 @@ use warnings;
 use Data::Dumper;
 use JSON;
 use Flickr::API;
+use Getopt::Long;
 
 $\ = "\n";
 # Read the key from command line arguments
 sub usage {
-    print "Usage: $0 <key> <json file>\n";
+    print "Usage: $0 <key> <json file> [--filter keymatch]\n";
     exit 1;
 }
+
+# Variável para armazenar a regex opcional
+my $filter_regex;
+
+# Captura de argumentos e regex opcional
+GetOptions('filter=s' => \$filter_regex);
+
+# Compila a regex se fornecida
+$filter_regex = qr/$filter_regex/ if defined $filter_regex;
 
 usage() unless @ARGV == 2;
 
@@ -57,6 +67,8 @@ my $count = 0;
 
 # Loop over each hash in the array
 foreach my $hash (@$data) {
+    # Aplica o filtro se fornecido
+    next if defined $filter_regex && $hash->{$key} !~ $filter_regex;
 
   # Find all photos tagged with the key from the hash
   my $response = $flickr->execute_method(
@@ -73,7 +85,7 @@ foreach my $hash (@$data) {
   warn qq|Couldn't find any photo for tag $hash->{$key}| and next unless exists $photos->[0]->{id};
 
   # Construct the titles for the two photosets
-  my $ordern = sprintf("%02X", $hash->{'Ord No'});
+  my $ordern = $hash->{'Ord No'};
   my $title1 = 'A0 - ' . $ordern . ' - ' . $hash->{'Order'};
   my $title2 = 'A1 - ' . $hash->{'HEX'} . ' - ' . $hash->{'Family'};
 
