@@ -71,10 +71,10 @@ if (defined $days) {
 
     # If the days option is provided, pre-fetch all photos uploaded in the last $days
     my %valid_tags;
-    my $page = 1;
+    my $page = 0;
     my $pages = 1;
     
-    while ($page <= $pages) {
+    while (++$page <= $pages) {
         my $response = $flickr->execute_method('flickr.photos.search', {
             user_id => 'me',
             min_upload_date => $min_upload_date,
@@ -85,7 +85,7 @@ if (defined $days) {
 
         warn "Error retrieving photos: $response->{error_message}\n\n" and last unless $response->{success};
 
-        my $photos = $response->as_hash()->{photos}->{photo};
+        my $photos = $response->as_hash()->{photos}->{photo} // next; #next unless $photos;
         $photos = [ $photos ] unless ref $photos eq 'ARRAY';  # Handle the case where there is only 1 photo
 
         # Collect all unique raw tags from the photos
@@ -95,7 +95,7 @@ if (defined $days) {
         }
 
         $pages = $response->as_hash()->{photos}->{pages};
-        $page++;
+        #$page++;
     }
 
     # Filter @$data array if the key of each element is not one of the raw tags (converted to canonical form)
