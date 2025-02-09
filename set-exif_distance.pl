@@ -69,12 +69,25 @@ while (++$page <= $pages) {
         my $exif_data = $exif_response->as_hash()->{photo}->{exif};
         next unless $exif_data;
 
-        # Extract "Subject Distance" from EXIF
+        #print Dumper $exif_data;
+        # Extract "Subject Distance" and "Camera Model" from EXIF
         my $subject_distance;
         foreach my $tag (@$exif_data) {
             if ($tag->{label} eq "Subject Distance") {
                 $subject_distance = $tag->{raw};  # Keep the scalar value (distance + unit)
-                last;
+                #last;
+                next
+            } elsif ($tag->{tag} eq 'Model') {
+                my $model = $tag->{raw};
+                            # Construct machine tags
+                my $machine_tag = qq|camera:model=$model|;  # camera model
+
+                my $tag_response = $flickr->execute_method('flickr.photos.addTags', {
+                    photo_id => $photo_id,
+                    tags     => $machine_tag,
+                });
+                warn "Error adding camera:model tag to photo $photo_id: $tag_response->{error_message}\n" and next unless $tag_response->{success};
+                print "Added camera:model tag to photo $photo_id: $machine_tag";
             }
         }
 
