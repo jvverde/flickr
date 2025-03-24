@@ -41,6 +41,53 @@ my @distance_labels = (
     "0-10", "10-20", "20-30", "30-40", "40-50", "50-60", "60-70", "70-80", "80-90", "90-100", "faraway"
 );
 
+# Subroutine to add camera model machine tag
+sub add_camera_model_tag {
+    my ($photo_id, $model) = @_;
+    $model =~ s/[^a-z0-9]+//ig;
+    my $machine_tag = qq|camera:model="$model"|;  # camera model
+
+    my $tag_response = $flickr->execute_method('flickr.photos.addTags', {
+        photo_id => $photo_id,
+        tags     => $machine_tag,
+    });
+    warn "Error adding camera:model tag to photo $photo_id: $tag_response->{error_message}\n" and return unless $tag_response->{success};
+    print "Added camera:model tag to photo $photo_id: $machine_tag";
+}
+
+# Subroutine to add subject distance machine tags
+sub add_subject_distance_tags {
+    my ($photo_id, $subject_distance, $distance_labels) = @_;
+    return undef unless defined $subject_distance;
+    # Extract numeric value and units from subject distance
+    if ($subject_distance =~ /^((?!0[^\d.]*$)[\d.]+)\s*(\w*)/) {
+        my $distance = $1;       # Numeric value
+        my $unit = $2 // '';     # Units (if present)
+        my $index = int($distance / 10);  # Calculate index for mapping
+        $index = $#$distance_labels if $index > $#$distance_labels;  # Clamp to last range if out of bounds
+        my $distance_range = $distance_labels->[$index];
+
+        # Construct machine tags
+        my @machine_tags = (
+            qq|distance:subject=$distance$unit|,  # Exact distance with units
+            qq|distance:range="$distance_range"|  # Range without units
+        );
+
+        # Add machine tags to the photo
+        my $tags = join ' ', @machine_tags;
+        my $tag_response = $flickr->execute_method('flickr.photos.addTags', {
+            photo_id => $photo_id,
+            tags     => $tags,
+        });
+
+        warn "Error adding tags to photo $photo_id: $tag_response->{error_message}\n" and return unless $tag_response->{success};
+        print "Added machine tags to photo $photo_id: $tags";
+    }
+    else {
+        warn "Could not parse Subject Distance for photo $photo_id: $subject_distance";
+    }
+}
+
 # Fetch all photos uploaded in the last $days
 my $page = 0;
 my $pages = 1;
@@ -69,57 +116,16 @@ while (++$page <= $pages) {
         my $exif_data = $exif_response->as_hash()->{photo}->{exif};
         next unless $exif_data;
 
-        #print Dumper $exif_data;
         # Extract "Subject Distance" and "Camera Model" from EXIF
         my $subject_distance;
         foreach my $tag (@$exif_data) {
             if ($tag->{label} eq "Subject Distance") {
-                $subject_distance = $tag->{raw};  # Keep the scalar value (distance + unit)
-                #last;
-                next
+                add_subject_distance_tags($photo_id, $tag->{raw}, \@distance_labels);
             } elsif ($tag->{tag} eq 'Model') {
-                my $model = $tag->{raw};
-                            # Construct machine tags
-                my $machine_tag = qq|camera:model=$model|;  # camera model
-
-                my $tag_response = $flickr->execute_method('flickr.photos.addTags', {
-                    photo_id => $photo_id,
-                    tags     => $machine_tag,
-                });
-                warn "Error adding camera:model tag to photo $photo_id: $tag_response->{error_message}\n" and next unless $tag_response->{success};
-                print "Added camera:model tag to photo $photo_id: $machine_tag";
+                add_camera_model_tag($photo_id, $tag->{raw});
             }
         }
-
-        next unless defined $subject_distance;
-
-        # Extract numeric value and units from subject distance
-        if ($subject_distance =~ /^((?!0[^\d.]*$)[\d.]+)\s*(\w*)/) {
-            my $distance = $1;       # Numeric value
-            my $unit = $2 // '';     # Units (if present)
-            my $index = int($distance / 10);  # Calculate index for mapping
-            $index = $#distance_labels if $index > $#distance_labels;  # Clamp to last range if out of bounds
-            my $distance_range = $distance_labels[$index];
-
-            # Construct machine tags
-            my @machine_tags = (
-                qq|distance:subject=$distance$unit|,  # Exact distance with units
-                qq|distance:range="$distance_range"|  # Range without units
-            );
-
-            # Add machine tags to the photo
-            my $tags = join ' ', @machine_tags;
-            my $tag_response = $flickr->execute_method('flickr.photos.addTags', {
-                photo_id => $photo_id,
-                tags     => $tags,
-            });
-
-            warn "Error adding tags to photo $photo_id: $tag_response->{error_message}\n" and next unless $tag_response->{success};
-            print "Added machine tags to photo $photo_id: $tags";
-        }
-        else {
-            warn "Could not parse Subject Distance for photo $photo_id: $subject_distance";
-        }
+        
     }
 
     $pages = $response->as_hash()->{photos}->{pages};
