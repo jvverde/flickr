@@ -88,6 +88,28 @@ sub add_subject_distance_tags {
     }
 }
 
+# Subroutine to add shutter counter machine tag
+sub add_shutter_counter_tag {
+    my ($photo_id, $count) = @_;
+    
+    # Remove non-numeric characters (keep only digits)
+    $count =~ s/[^\d]//g;
+    
+    # Only proceed if we have a valid number
+    if ($count && $count =~ /^\d+$/) {
+        my $machine_tag = qq|camera:shuttercounter="$count"|;
+        
+        my $tag_response = $flickr->execute_method('flickr.photos.addTags', {
+            photo_id => $photo_id,
+            tags     => $machine_tag,
+        });
+        warn "Error adding camera:shuttercounter tag to photo $photo_id: $tag_response->{error_message}\n" and return unless $tag_response->{success};
+        print "Added camera:shuttercounter tag to photo $photo_id: $machine_tag\n";
+    } else {
+        warn "Invalid shutter count value for photo $photo_id: $count\n";
+    }
+}
+
 # Fetch all photos uploaded in the last $days
 my $page = 0;
 my $pages = 1;
@@ -123,6 +145,8 @@ while (++$page <= $pages) {
                 add_subject_distance_tags($photo_id, $tag->{raw}, \@distance_labels);
             } elsif ($tag->{tag} eq 'Model') {
                 add_camera_model_tag($photo_id, $tag->{raw});
+            } elsif ($tag->{label} =~ /Shutter Count|Image Count|ShutterCounter/i) {
+                add_shutter_counter_tag($photo_id, $tag->{raw});
             }
         }
         

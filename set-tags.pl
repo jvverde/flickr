@@ -104,7 +104,7 @@ if (defined $days) {
 # Loop through each hash in the filtered array
 foreach my $hash (@$data) {
     my $key_value = $hash->{$key_name};
-    next if $match && $key_value !~ m/\Q$match\E/i;
+    next if $match && $key_value !~ m/$match/i;
 
     # Search for photos with the key value and add tags to them
     my %search_params = (
