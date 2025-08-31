@@ -7,103 +7,147 @@ use Data::Dumper;
 use JSON;
 binmode(STDOUT, ':utf8');
 
+# Set output record and field separators
+$\ = "\n";  # Output record separator (newline)
+$, = " ";   # Output field separator (space)
 
-$\ = "\n";
-$, = " ";
+# Initialize JSON parser with UTF-8 encoding
 my $json = JSON->new->utf8;
-# import Flickr API configuration
+
+# Load Flickr API configuration from storable config file
 my $config_file = "$ENV{HOME}/saved-flickr.st";
 my $flickr = Flickr::API->import_storable_config($config_file);
 
-# usage subroutine to print help message
+# Enhanced usage subroutine to display detailed help message
 sub usage {
-    print "Set species number\nUsage:\n";
-    print "  $0 --file jsonfile --out updatefile\n";
-    print "  $0 -f jsonfile -o updatefile\n";
+    print <<'END_USAGE';
+Set species number for Flickr photos based on JSON input.
+
+Usage:
+  $0 --file <jsonfile> --out <updatefile>
+  $0 -f <jsonfile> -o <updatefile>
+  $0 --help
+
+Options:
+  -f, --file  Input JSON file containing species data (required)
+  -o, --out   Output JSON file to store updated data (required)
+  -h, --help  Display this help message and exit
+
+The input JSON file should be an array of hashes, each containing a 'species' key.
+The script searches Flickr for photos tagged with each species, sorts them by upload date,
+and assigns sequential numbers based on the earliest photo date.
+END_USAGE
     exit;
 }
 
+# Read content from a file
 sub readfile {
-    open(my $fh, "<", $_[0]) or die("Can't open $_[0]: $!");
-    local $/;
-    my $result = <$fh>;
+    my ($filename) = @_;
+    open(my $fh, "<", $filename) or die("Cannot open $filename: $!");
+    local $/;  # Enable slurp mode to read entire file
+    my $content = <$fh>;
     close $fh;
-    return $result
+    return $content;
 }
+
+# Write content to a file
 sub writefile {
-    my ($file, $content) = @_;
-    open(my $fh, ">", $file) or die("Can't open $file: $!");
+    my ($filename, $content) = @_;
+    open(my $fh, ">", $filename) or die("Cannot open $filename for writing: $!");
     print $fh $content;
     close $fh;
 }
 
+# Declare variables for command-line options
 my ($file_name, $out);
 
+# Parse command-line options
 GetOptions(
-  "f|file=s" => \$file_name,
-  "o|out=s" => \$out,
-  "h|help" => \&usage
-);
+    "f|file=s" => \$file_name,  # Input JSON file
+    "o|out=s"  => \$out,        # Output JSON file
+    "h|help"   => \&usage       # Show help
+) or usage();
 
-usage () unless defined $file_name and defined $out;
-# read the data from json file
+# Validate required command-line arguments
+usage() unless defined $file_name && defined $out;
+
+# Read and parse input JSON file
 my $json_text = readfile($file_name);
-
-# parse the json text to perl data structure
 my $data = $json->decode($json_text);
-die "Invalid file. It should be a json array of hashes with a key species" unless defined $data->[0] && exists $data->[0]->{species};
 
+# Validate JSON structure: must be an array of hashes with 'species' key
+die "Invalid JSON format: Must be an array of hashes with a 'species' key"
+    unless ref $data eq 'ARRAY' && @$data && exists $data->[0]->{species};
+
+# Array to store processed species data
 my @all;
-my $cnt = 0;
+my $cnt = 0;  # Counter for processed species
+
+# Process each species in the input JSON
 foreach my $hash (@$data) {
     my $species = $hash->{species};
 
-    # search for photos with the key value and add tags to them
-    my $response = eval { # prevent a die from API
-      $flickr->execute_method('flickr.photos.search', {
-        user_id => 'me',
-        tags => $species,
-        per_page => 500,
-        extras => 'date_upload',
-        page => 1
-      })
-    } or warn "$@" and redo;
-    warn "Error retrieving photos of '$species': $response->{error_message}\n\n" and redo unless $response->{success};
-
-    my $photos = $response->as_hash()->{photos}->{photo};
-    $photos = [ $photos ] unless ref $photos eq 'ARRAY'; #Just in case for a limit situation when there is only 1 photo
-    next unless exists $photos->[0]->{id}; 
-    my @order = sort { $a->{dateupload} <=> $b->{dateupload} } @$photos;
-    push @all, {
-      species => $species,
-      date => $order[0]->{dateupload},
-      first => $order[0]->{id},
-      ids => [map { $_->{id} } @$photos]
+    # Search Flickr for photos tagged with the species
+    my $response = eval {
+        $flickr->execute_method('flickr.photos.search', {
+            user_id  => 'me',         # Search photos from authenticated user
+            tags     => $species,     # Species tag to search
+            per_page => 500,          # Max photos per page
+            extras   => 'date_upload',# Include upload date in results
+            page     => 1             # First page of results
+        })
     };
-    print ++$cnt, "- For '$species' got", scalar @$photos, 'photos';
-    #last if $cnt > 2;
+    if ($@ || !$response->{success}) {
+        warn "Error retrieving photos for '$species': $@ or $response->{error_message}";
+        redo;  # Retry on failure
+    }
+
+    # Extract photos from response
+    my $photos = $response->as_hash()->{photos}->{photo};
+    $photos = [$photos] unless ref $photos eq 'ARRAY';  # Handle single photo case
+
+    # Skip if no photos found
+    next unless @$photos && exists $photos->[0]->{id};
+
+    # Sort photos by upload date
+    my @order = sort { $a->{dateupload} <=> $b->{dateupload} } @$photos;
+
+    # Store species data with earliest photo date and IDs
+    push @all, {
+        species => $species,
+        date    => $order[0]->{dateupload},
+        first   => $order[0]->{id},
+        ids     => [map { $_->{id} } @order]
+    };
+
+    # Print progress
+    print ++$cnt, "- For '$species' got", scalar @order, 'photos';
+    # Optional: Uncomment to limit processing for testing
+    # last if $cnt > 2;
 }
 
+# Sort all species by earliest photo date
 my @order = sort { $a->{date} <=> $b->{date} } @all;
 
+# Load existing output file if it exists
 my $current = {};
-
-if (-f $out) {
-  $current = $json->decode(readfile($out))
+if (-f $out && -s $out) {
+    $current = $json->decode(readfile($out));
 }
 
+# Assign sequential numbers to species based on earliest photo date
 my $number = 1;
 foreach my $ele (@order) {
-  my $species = $ele->{species};
-  my $c = $current->{$species} // { n => 0 };
-  if ($c->{n} > $number) {
-    print "Previous was $c->{n} (> $number)";
-    $number = $c->{n};
-  }
-  $ele->{n} = $number++;
-  $current->{$species} = $ele;
+    my $species = $ele->{species};
+    my $c = $current->{$species} // { n => 0 };  # Get existing number or default to 0
+    if ($c->{n} > $number) {
+        print "Previous number for '$species' was $c->{n} (higher than $number)";
+        $number = $c->{n};  # Use higher existing number
+    }
+    $ele->{n} = $number++;  # Assign new number and increment
+    $current->{$species} = $ele;  # Update current data
 }
 
-print "Update json file on $out";
-
+# Write updated data to output file
+print "Updating JSON file at $out";
 writefile($out, $json->pretty->encode($current));
