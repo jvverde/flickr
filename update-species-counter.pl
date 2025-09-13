@@ -3,8 +3,8 @@ use strict;
 use warnings;
 use Getopt::Long;
 use Flickr::API;
-use Data::Dumper;
 use JSON;
+use POSIX qw(strftime);
 binmode(STDOUT, ':utf8');
 
 # Set output record and field separators
@@ -21,21 +21,26 @@ my $flickr = Flickr::API->import_storable_config($config_file);
 # Enhanced usage subroutine to display detailed help message
 sub usage {
     print <<'END_USAGE';
-Set species number for Flickr photos based on JSON input.
+Set sequence numbers for Flickr photo groups based on machine tags.
 
 Usage:
-  $0 --file <jsonfile> --out <updatefile>
-  $0 -f <jsonfile> -o <updatefile>
+  $0 --tag <tag> --out <updatefile>
+  $0 -t <tag> -o <updatefile>
   $0 --help
 
 Options:
-  -f, --file  Input JSON file containing species data (required)
+  -t, --tag   The base tag to search for (e.g., IOC151) (required)
   -o, --out   Output JSON file to store updated data (required)
   -h, --help  Display this help message and exit
 
-The input JSON file should be an array of hashes, each containing a 'species' key.
-The script searches Flickr for photos tagged with each species, sorts them by upload date,
-and assigns sequential numbers based on the earliest photo date.
+The script searches for photos tagged with the provided tag (e.g., IOC151),
+groups them by machine tags like IOC151:seq=NUMBER (case-insensitive),
+extracts binomial names from machine tags like IOC151:binomial=NAME (case-insensitive),
+initializes groups from the output file if it exists,
+updates with new photos or new sequence numbers found,
+and saves the updated data to the output JSON file only if changes are detected.
+The data is a hash indexed by seq number,
+with values being hashes of photo_id => {date_upload, date_uploaded, photo_title, photo_page_url, binomial}.
 END_USAGE
     exit;
 }
@@ -59,95 +64,120 @@ sub writefile {
 }
 
 # Declare variables for command-line options
-my ($file_name, $out);
+my ($tag, $out);
 
 # Parse command-line options
 GetOptions(
-    "f|file=s" => \$file_name,  # Input JSON file
-    "o|out=s"  => \$out,        # Output JSON file
-    "h|help"   => \&usage       # Show help
+    "t|tag=s" => \$tag,  # Base tag
+    "o|out=s" => \$out,  # Output JSON file
+    "h|help"  => \&usage # Show help
 ) or usage();
 
 # Validate required command-line arguments
-usage() unless defined $file_name && defined $out;
+usage() unless defined $tag && defined $out;
 
-# Read and parse input JSON file
-my $json_text = readfile($file_name);
-my $data = $json->decode($json_text);
+# Load existing groups from file if it exists
+my %groups;
+if (-f $out && -s $out) {
+    my $loaded = $json->decode(readfile($out));
+    %groups = %$loaded if ref $loaded eq 'HASH';
+}
 
-# Validate JSON structure: must be an array of hashes with 'species' key
-die "Invalid JSON format: Must be an array of hashes with a 'species' key"
-    unless ref $data eq 'ARRAY' && @$data && exists $data->[0]->{species};
-
-# Array to store processed species data
-my @all;
-my $cnt = 0;  # Counter for processed species
-
-# Process each species in the input JSON
-foreach my $hash (@$data) {
-    my $species = $hash->{species};
-
-    # Search Flickr for photos tagged with the species
+# Search for all photos with the given tag, handling multiple pages
+my $page = 1;
+my @all_photos;
+my $pages = 1;  # Initialize to enter loop
+do {
     my $response = eval {
         $flickr->execute_method('flickr.photos.search', {
-            user_id  => 'me',         # Search photos from authenticated user
-            tags     => $species,     # Species tag to search
-            per_page => 500,          # Max photos per page
-            extras   => 'date_upload',# Include upload date in results
-            page     => 1             # First page of results
+            user_id  => 'me',               # Search photos from authenticated user
+            tags     => $tag,               # Base tag to search
+            per_page => 500,                # Max photos per page
+            extras   => 'date_upload,owner,title,machine_tags',  # Include necessary extras
+            page     => $page               # Current page
         })
     };
     if ($@ || !$response->{success}) {
-        warn "Error retrieving photos for '$species': $@ or $response->{error_message}";
-        redo;  # Retry on failure
+        warn "Error retrieving photos for page $page: $@ or $response->{error_message}";
+        redo;  # Retry the current page on failure
     }
 
-    # Extract photos from response
-    my $photos = $response->as_hash()->{photos}->{photo};
-    $photos = [$photos] unless ref $photos eq 'ARRAY';  # Handle single photo case
+    my $hash = $response->as_hash();
+    my $photos = $hash->{photos}->{photo} || [];
+    $photos = [$photos] unless ref $photos eq 'ARRAY';
+    push @all_photos, @$photos;
 
-    # Skip if no photos found
-    next unless @$photos && exists $photos->[0]->{id};
+    $pages = $hash->{photos}->{pages} || 1;
+    print "Got $page of $pages page(s)";
+    $page++;
+} while ($page <= $pages);
 
-    # Sort photos by upload date
-    my @order = sort { $a->{dateupload} <=> $b->{dateupload} } @$photos;
+# Skip if no photos found
+if (!@all_photos) {
+    print "No photos found for tag '$tag'";
+    exit;
+}
 
-    # Store species data with earliest photo date and IDs
-    push @all, {
-        species => $species,
-        date    => $order[0]->{dateupload},
-        first   => $order[0]->{id},
-        ids     => [map { $_->{id} } @order]
+# Flags for changes
+my $new_photos = 0;
+my $new_seqs = 0;
+
+# Update groups with photos from machine tags
+foreach my $photo (@all_photos) {
+    my $id = $photo->{id};
+    my $page_url = "https://www.flickr.com/photos/$photo->{owner}/$id/";
+    my $date_upload = $photo->{dateupload};
+
+    my $machine_tags = $photo->{machine_tags} // '';
+    my @mtags = split ' ', $machine_tags;
+    my $number;
+    my $binomial;
+    foreach my $mt (@mtags) {
+        if ($mt =~ /^\Q$tag\E:seq=(\d+)$/i) {
+            $number = $1;
+        } elsif ($mt =~ /^\Q$tag\E:binomial=(.+)$/i) {
+            $binomial = $1;
+        }
+        last if defined $number && defined $binomial;  # Exit loop if both are found
+    }
+    warn "No seq found for photo $page_url" and next unless defined $number;
+
+    if (!exists $groups{$number}) {
+        $groups{$number} = {};
+        $new_seqs++;
+        print "New sequence number found: $number";
+    }
+
+    next if exists $groups{$number}{$id} and $groups{$number}{$id}{date_upload} == $date_upload;
+
+    if (!exists $groups{$number}{$id}) {
+        print "New photo found for seq $number: $id";
+    } else {
+        print "Date updated for photo $id in seq $number: old=$groups{$number}{$id}{date_upload}, new=$date_upload";
+    }
+    my $date_uploaded = strftime("%Y-%m-%d %H:%M:%S", localtime($date_upload));
+    my $photo_title = $photo->{title} // '';
+    $groups{$number}{$id} = {
+        date_upload    => $date_upload,
+        date_uploaded  => $date_uploaded,
+        photo_title    => $photo_title,
+        photo_page_url => $page_url,
+        binomial       => $binomial // ''  # Store binomial if found, else empty string
     };
-
-    # Print progress
-    print ++$cnt, "- For '$species' got", scalar @order, 'photos';
-    # Optional: Uncomment to limit processing for testing
-    # last if $cnt > 2;
+    $new_photos++;
 }
 
-# Sort all species by earliest photo date
-my @order = sort { $a->{date} <=> $b->{date} } @all;
+# # Print progress
+# my $cnt = 0;
+# foreach my $num (sort { $a <=> $b } keys %groups) {
+#     my $photo_count = scalar keys %{$groups{$num}};
+#     print ++$cnt, "- For seq $num got $photo_count photos";
+# }
 
-# Load existing output file if it exists
-my $current = {};
-if (-f $out && -s $out) {
-    $current = $json->decode(readfile($out));
+# Write updated data to output file if changes detected
+if ($new_photos || $new_seqs) {
+    print "Changes detected. Updating JSON file at $out";
+    writefile($out, $json->pretty->encode(\%groups));
+} else {
+    print "No new photos or sequence numbers found. No update needed.";
 }
-
-# Assign sequential numbers to species based on earliest photo date
-my $number = 1;
-foreach my $ele (@order) {
-    my $species = $ele->{species};
-    my $c = $current->{$species} // { n => 0 };  # Get existing number or default to 0
-    if ($c->{n} > $number) {
-        print "Previous number for '$species' was $c->{n} (higher than $number)";
-        $number = $c->{n};  # Use higher existing number
-    }
-    $ele->{n} = $number++;  # Assign new number and increment
-    $current->{$species} = $ele;  # Update current data
-}
-
-# Write updated data to output file
-print "Updating JSON file at $out";
-writefile($out, $json->pretty->encode($current));
