@@ -3,14 +3,17 @@ use strict;
 use warnings;
 use Getopt::Long;
 use JSON;
-binmode(STDOUT, ':utf8');
+use Encode;
 
 # Set output record and field separators
 $\ = "\n";  # Output record separator (newline)
 $, = " ";   # Output field separator (space)
 
-# Initialize JSON parser with UTF-8 encoding
-my $json = JSON->new->utf8;
+# Set STDOUT to handle UTF-8 properly
+binmode(STDOUT, ':encoding(UTF-8)');
+
+# Initialize JSON parser without utf8 flag
+my $json = JSON->new->pretty->canonical;
 
 # Enhanced usage subroutine to display detailed help message
 sub usage {
@@ -43,7 +46,7 @@ END_USAGE
 # Read content from a file
 sub readfile {
     my ($filename) = @_;
-    open(my $fh, "<", $filename) or die("Cannot open $filename: $!");
+    open(my $fh, "<:encoding(UTF-8)", $filename) or die("Cannot open $filename: $!");
     local $/;  # Enable slurp mode to read entire file
     my $content = <$fh>;
     close $fh;
@@ -53,7 +56,7 @@ sub readfile {
 # Write content to a file
 sub writefile {
     my ($filename, $content) = @_;
-    open(my $fh, ">", $filename) or die("Cannot open $filename for writing: $!");
+    open(my $fh, ">:encoding(UTF-8)", $filename) or die("Cannot open $filename for writing: $!");
     print $fh $content;
     close $fh;
 }
@@ -116,10 +119,10 @@ if ($array) {
         }
     } keys %transformed;
     @array_output = sort { $a->{cnt} <=> $b->{cnt} } @array_output;
-    $output = $json->pretty->encode(\@array_output);
+    $output = $json->encode(\@array_output);
 } else {
     # Output as hash
-    $output = $json->pretty->encode(\%transformed);
+    $output = $json->encode(\%transformed);
 }
 
 # Step 5: Output the transformed data
