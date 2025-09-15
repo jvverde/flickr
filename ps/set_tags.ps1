@@ -22,9 +22,10 @@
 #   - PowerShell 5.1 or higher
 #   - Flickr API credentials stored in Secret Management (FlickrApiKey, FlickrApiSecret, FlickrAuthToken, FlickrTokenSecret)
 #   - JSON file with consistent structure (array of objects)
+#   - FlickrApiUtils.psm1 module available in a module path or same directory
 #
 # Key Features:
-#   - Supports OAuth 1.0 for secure Flickr API authentication
+#   - Uses FlickrApiUtils module for OAuth 1.0 authentication and tag normalization
 #   - Canonicalizes tags to ensure consistent matching
 #   - Handles multi-word tags with proper quoting
 #   - Provides dry-run mode for testing
@@ -71,6 +72,15 @@ param (
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Import the FlickrApiUtils module
+# Explanation: Loads reusable Flickr API functions from FlickrApiUtils.psm1
+try {
+    Import-Module -Name FlickrApiUtils -ErrorAction Stop
+} catch {
+    Write-Error "Failed to import FlickrApiUtils module: $_"
+    exit
+}
+
 # --- Function: Show-Usage ---
 # Displays usage instructions and exits the script
 # Provides examples and detailed parameter descriptions for clarity
@@ -97,160 +107,6 @@ Example:
   .\set_tags.ps1 -File birds.json -Key species -Tag Order,Family -DryRun
 "@
     exit
-}
-
-# --- Function: UrlEncode-RFC3986 ---
-# Encodes a string according to RFC 3986 for OAuth 1.0 compatibility
-# Necessary for Flickr API, which requires specific URL encoding
-function UrlEncode-RFC3986 {
-    param(
-        [Parameter(Mandatory=$true, HelpMessage="String to URL-encode")]
-        [AllowEmptyString()]
-        [string]$s
-    )
-    if ([string]::IsNullOrEmpty($s)) { return "" }
-
-    # Use .NET's URI encoding, then fix specific characters for OAuth compliance
-    $encoded = [System.Uri]::EscapeDataString($s)
-    $encoded = $encoded -replace '!', '%21' `
-                       -replace '\*', '%2A' `
-                       -replace "'", '%27' `
-                       -replace '\(', '%28' `
-                       -replace '\)', '%29'
-    return $encoded
-}
-
-# --- Function: Get-OAuthSignature ---
-# Generates an OAuth 1.0 HMAC-SHA1 signature for secure Flickr API requests
-# Combines method, URL, and parameters into a signed string
-function Get-OAuthSignature {
-    param (
-        [Parameter(Mandatory=$true, HelpMessage="HTTP method (e.g., GET)")]
-        [string]$Method,
-
-        [Parameter(Mandatory=$true, HelpMessage="Base URL for the API request")]
-        [string]$Url,
-
-        [Parameter(Mandatory=$true, HelpMessage="Hashtable of request parameters")]
-        [hashtable]$Params,
-
-        [Parameter(Mandatory=$true, HelpMessage="Flickr API consumer secret")]
-        [string]$ConsumerSecret,
-
-        [Parameter(Mandatory=$true, HelpMessage="OAuth token secret")]
-        [string]$TokenSecret
-    )
-
-    # Sort and encode parameters for the signature base string
-    # Explanation: Parameters are sorted by key to ensure consistent signature generation
-    $sortedParams = ($Params.GetEnumerator() | Sort-Object Name | ForEach-Object {
-        "$(UrlEncode-RFC3986 $_.Key)=$(UrlEncode-RFC3986 $_.Value)"
-    }) -join '&'
-
-    # Create base string and signing key for HMAC-SHA1
-    $baseString = "$Method&$(UrlEncode-RFC3986 $Url)&$(UrlEncode-RFC3986 $sortedParams)"
-    $signingKey = "$(UrlEncode-RFC3986 $ConsumerSecret)&$(UrlEncode-RFC3986 $TokenSecret)"
-
-    # Compute HMAC-SHA1 signature
-    # Explanation: HMAC-SHA1 is a cryptographic algorithm that generates a secure hash
-    $hmac = New-Object System.Security.Cryptography.HMACSHA1
-    $hmac.Key = [System.Text.Encoding]::ASCII.GetBytes($signingKey)
-    $signature = [Convert]::ToBase64String($hmac.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($baseString)))
-    return $signature
-}
-
-# --- Function: Invoke-FlickrApi ---
-# Calls Flickr REST API with OAuth 1.0 authentication
-# Handles both actual API calls and dry-run simulation
-function Invoke-FlickrApi {
-    param (
-        [Parameter(Mandatory=$true, HelpMessage="Flickr API method name")]
-        [string]$MethodName,
-
-        [Parameter(Mandatory=$true, HelpMessage="Hashtable of API parameters")]
-        [hashtable]$Params,
-
-        [Parameter(Mandatory=$true, HelpMessage="Flickr API key")]
-        [string]$ApiKey,
-
-        [Parameter(Mandatory=$true, HelpMessage="Flickr API secret")]
-        [string]$ApiSecret,
-
-        [Parameter(Mandatory=$true, HelpMessage="OAuth authentication token")]
-        [string]$AuthToken,
-
-        [Parameter(Mandatory=$true, HelpMessage="OAuth token secret")]
-        [string]$TokenSecret,
-
-        [Parameter(HelpMessage="Simulate API call without execution")]
-        [bool]$DryRun=$false
-    )
-
-    $baseUrl = "https://api.flickr.com/services/rest"
-
-    # Define OAuth parameters required for Flickr API authentication
-    $oauthParams = @{
-        oauth_consumer_key     = $ApiKey
-        oauth_token            = $AuthToken
-        oauth_signature_method = "HMAC-SHA1"
-        oauth_timestamp        = [int]([DateTime]::UtcNow - (Get-Date "1970-01-01")).TotalSeconds
-        oauth_nonce            = [Guid]::NewGuid().ToString("N")
-        oauth_version          = "1.0"
-        method                 = $MethodName
-        format                 = "json"
-        nojsoncallback         = "1"
-    }
-
-    # Merge OAuth parameters with method-specific parameters
-    # Explanation: Combines OAuth parameters with additional parameters (e.g., photo_id, tags)
-    $allParams = $oauthParams.Clone()
-    foreach ($key in $Params.Keys) { $allParams[$key] = $Params[$key] }
-
-    # Generate OAuth signature for the request
-    $allParams['oauth_signature'] = Get-OAuthSignature -Method "GET" -Url $baseUrl -Params $allParams `
-        -ConsumerSecret $ApiSecret -TokenSecret $TokenSecret
-
-    # Build the query string for the API request
-    # Explanation: Parameters are sorted and URL-encoded to form a valid query string
-    $query = ($allParams.GetEnumerator() | Sort-Object Name | ForEach-Object {
-        "$(UrlEncode-RFC3986 $_.Key)=$(UrlEncode-RFC3986 $_.Value)"
-    }) -join '&'
-
-    $url = "${baseUrl}?$query"
-
-    # Simulate API call in dry-run mode for tag addition
-    if ($DryRun -and $MethodName -eq 'flickr.photos.addTags') {
-        Write-Host "[Dry Run] Would call: $url"
-        return @{ success=$true; dry_run=$true; data=$null }
-    }
-
-    # Execute the API call and handle response
-    try {
-        $response = Invoke-RestMethod -Uri $url -Method Get
-        if ($response.stat -eq 'ok') {
-            return @{ success=$true; data=$response }
-        } else {
-            $errMsg = if ($null -ne $response.message) { $response.message } else { (ConvertTo-Json $response -Depth 5) }
-            Write-Warning "API call error: $errMsg"
-            return @{ success=$false; error_message=$errMsg }
-        }
-    } catch {
-        Write-Warning "API call failed: $_"
-        return @{ success=$false; error_message=$_ }
-    }
-}
-
-# --- Function: Canonicalize-Tag ---
-# Normalizes tags by removing non-alphanumeric characters and converting to lowercase
-# Ensures consistent tag matching across Flickr and JSON data
-function Canonicalize-Tag { 
-    param(
-        [Parameter(Mandatory=$true, HelpMessage="Tag to canonicalize")]
-        [string]$Tag
-    ) 
-    # Remove all characters except letters, numbers, and colons, then convert to lowercase
-    # Example: "Red-Tailed Hawk!" becomes "redtailedhawk"
-    $Tag -replace '[^a-zA-Z0-9:]', '' | ForEach-Object { $_.ToLower() } 
 }
 
 # -----------------------------------------------------------------------------
@@ -310,7 +166,7 @@ do {
         $searchParams['min_upload_date'] = [int]([DateTime]::UtcNow.AddDays(-$Days).Subtract((Get-Date "1970-01-01")).TotalSeconds)
     }
 
-    # Call Flickr API to fetch photos
+    # Call Flickr API to fetch photos using the module's Invoke-FlickrApi function
     $response = Invoke-FlickrApi -MethodName 'flickr.photos.search' -Params $searchParams `
         -ApiKey $apiKey -ApiSecret $apiSecret -AuthToken $authToken -TokenSecret $tokenSecret -DryRun:$DryRun
 
@@ -397,7 +253,7 @@ foreach ($photo in $photos) {
         Write-Host "Adding tags to PhotoID=$($photo.id), Title='$($photo.title)'"
         Write-Host "Tags to add: $tagsToAdd"
 
-        # Call Flickr API to add tags to the photo
+        # Call Flickr API to add tags to the photo using the module's Invoke-FlickrApi
         $resp = Invoke-FlickrApi -MethodName 'flickr.photos.addTags' -Params @{
             photo_id = $photo.id
             tags     = $tagsToAdd
