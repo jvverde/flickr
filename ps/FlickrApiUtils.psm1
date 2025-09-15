@@ -7,14 +7,15 @@
 #          to make authenticated Flickr API calls.
 #
 # Exported Functions:
-#   - UrlEncode-RFC3986: Encodes strings for OAuth 1.0 compatibility
+#   - ConvertTo-RFC3986UrlEncoded: Encodes strings for OAuth 1.0 compatibility
 #   - Get-OAuthSignature: Generates OAuth 1.0 HMAC-SHA1 signatures
 #   - Invoke-FlickrApi: Makes authenticated Flickr API calls
-#   - Canonicalize-Tag: Normalizes tags for consistent matching
+#   - ConvertTo-CanonicalTag: Normalizes tags for consistent matching
 #
 # Usage:
-#   Save this file as FlickrApiUtils.psm1 in a module directory (e.g., $env:PSModulePath).
-#   Import into a script using: Import-Module -Name FlickrApiUtils
+#   Save this file as FlickrApiUtils.psm1 in a module directory (e.g., $env:PSModulePath)
+#   or in the same directory as the calling script. Import into a script using:
+#   Import-Module -Name .\FlickrApiUtils.psm1
 #
 # Prerequisites:
 #   - PowerShell 5.1 or higher
@@ -23,12 +24,13 @@
 # Notes:
 #   - Ensure Flickr API credentials are securely stored (e.g., using Secret Management).
 #   - This module does not handle credential retrieval; scripts must provide credentials.
+#   - Function names use approved PowerShell verbs to comply with best practices.
 # -----------------------------------------------------------------------------
 
-# --- Function: UrlEncode-RFC3986 ---
+# --- Function: ConvertTo-RFC3986UrlEncoded ---
 # Encodes a string according to RFC 3986 for OAuth 1.0 compatibility
 # Necessary for Flickr API, which requires specific URL encoding
-function UrlEncode-RFC3986 {
+function ConvertTo-RFC3986UrlEncoded {
     param(
         [Parameter(Mandatory=$true, HelpMessage="String to URL-encode")]
         [AllowEmptyString()]
@@ -73,13 +75,13 @@ function Get-OAuthSignature {
     # Explanation: Parameters are sorted by key to ensure consistent signature generation
     # Each key and value is URL-encoded using RFC 3986, then joined with '&'
     $sortedParams = ($Params.GetEnumerator() | Sort-Object Name | ForEach-Object {
-        "$(UrlEncode-RFC3986 $_.Key)=$(UrlEncode-RFC3986 $_.Value)"
+        "$(ConvertTo-RFC3986UrlEncoded $_.Key)=$(ConvertTo-RFC3986UrlEncoded $_.Value)"
     }) -join '&'
 
     # Create base string and signing key for HMAC-SHA1
     # Explanation: The base string combines the HTTP method, URL, and sorted parameters
-    $baseString = "$Method&$(UrlEncode-RFC3986 $Url)&$(UrlEncode-RFC3986 $sortedParams)"
-    $signingKey = "$(UrlEncode-RFC3986 $ConsumerSecret)&$(UrlEncode-RFC3986 $TokenSecret)"
+    $baseString = "$Method&$(ConvertTo-RFC3986UrlEncoded $Url)&$(ConvertTo-RFC3986UrlEncoded $sortedParams)"
+    $signingKey = "$(ConvertTo-RFC3986UrlEncoded $ConsumerSecret)&$(ConvertTo-RFC3986UrlEncoded $TokenSecret)"
 
     # Compute HMAC-SHA1 signature
     # Explanation: HMAC-SHA1 is a cryptographic algorithm that generates a secure hash
@@ -147,7 +149,7 @@ function Invoke-FlickrApi {
     # Build the query string for the API request
     # Explanation: Parameters are sorted and URL-encoded to form a valid query string
     $query = ($allParams.GetEnumerator() | Sort-Object Name | ForEach-Object {
-        "$(UrlEncode-RFC3986 $_.Key)=$(UrlEncode-RFC3986 $_.Value)"
+        "$(ConvertTo-RFC3986UrlEncoded $_.Key)=$(ConvertTo-RFC3986UrlEncoded $_.Value)"
     }) -join '&'
 
     $url = "${baseUrl}?$query"
@@ -174,10 +176,10 @@ function Invoke-FlickrApi {
     }
 }
 
-# --- Function: Canonicalize-Tag ---
+# --- Function: ConvertTo-CanonicalTag ---
 # Normalizes tags by removing non-alphanumeric characters and converting to lowercase
 # Ensures consistent tag matching across Flickr and JSON data
-function Canonicalize-Tag { 
+function ConvertTo-CanonicalTag { 
     param(
         [Parameter(Mandatory=$true, HelpMessage="Tag to canonicalize")]
         [string]$Tag
@@ -188,4 +190,4 @@ function Canonicalize-Tag {
 }
 
 # Export the functions to make them available when the module is imported
-Export-ModuleMember -Function UrlEncode-RFC3986, Get-OAuthSignature, Invoke-FlickrApi, Canonicalize-Tag
+Export-ModuleMember -Function ConvertTo-RFC3986UrlEncoded, Get-OAuthSignature, Invoke-FlickrApi, ConvertTo-CanonicalTag

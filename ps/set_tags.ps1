@@ -22,7 +22,7 @@
 #   - PowerShell 5.1 or higher
 #   - Flickr API credentials stored in Secret Management (FlickrApiKey, FlickrApiSecret, FlickrAuthToken, FlickrTokenSecret)
 #   - JSON file with consistent structure (array of objects)
-#   - FlickrApiUtils.psm1 module available in a module path or same directory
+#   - FlickrApiUtils.psm1 module in the same directory as this script
 #
 # Key Features:
 #   - Uses FlickrApiUtils module for OAuth 1.0 authentication and tag normalization
@@ -72,12 +72,21 @@ param (
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Import the FlickrApiUtils module
+# Import the FlickrApiUtils module from the same directory
 # Explanation: Loads reusable Flickr API functions from FlickrApiUtils.psm1
+# Uses a relative path (.\FlickrApiUtils.psm1) to ensure the module is found
 try {
-    Import-Module -Name FlickrApiUtils -ErrorAction Stop
+    $modulePath = Join-Path -Path $PSScriptRoot -ChildPath "FlickrApiUtils.psm1"
+    if (-not (Test-Path -Path $modulePath)) {
+        Write-Error "FlickrApiUtils.psm1 not found in script directory: $PSScriptRoot"
+        exit
+    }
+    Import-Module -Name $modulePath -ErrorAction Stop
+    Write-Host "Successfully imported FlickrApiUtils module"
 } catch {
     Write-Error "Failed to import FlickrApiUtils module: $_"
+    Write-Host "Ensure FlickrApiUtils.psm1 is in the same directory as this script ($PSScriptRoot)"
+    Write-Host "Alternatively, place it in a PowerShell module path (run `$env:PSModulePath to check paths)"
     exit
 }
 
@@ -125,7 +134,9 @@ try {
     $authToken = (Get-Secret -Name FlickrAuthToken -AsPlainText)
     $tokenSecret = (Get-Secret -Name FlickrTokenSecret -AsPlainText)
 } catch {
-    Write-Error "Failed to retrieve Flickr API credentials: $_"
+    Write-Error "Failed to retrieve Flickr API credentials from Secret Management: $_"
+    Write-Host "Ensure secrets (FlickrApiKey, FlickrApiSecret, FlickrAuthToken, FlickrTokenSecret) are stored in your Secret Management vault"
+    Write-Host "You can use get_flickr_tokens.ps1 to obtain and store these credentials"
     exit
 }
 
@@ -187,7 +198,7 @@ Write-Host "Fetched $($photos.Count) photos from Flickr"
 $lookup = @{}
 foreach ($item in $data) {
     # Canonicalize the value of the specified JSON key for matching
-    $keyValue = Canonicalize-Tag -Tag $item.$Key
+    $keyValue = ConvertTo-CanonicalTag -Tag $item.$Key
 
     # Skip if regex filter (-Match) is specified and the key value doesn't match
     if ($Match -and $keyValue -notmatch $Match) { continue }
@@ -225,9 +236,9 @@ foreach ($photo in $photos) {
     # Split and canonicalize existing photo tags for matching
     # Explanation: $photo.tags is a space-separated string of tags
     # -split '\s+' splits the string into an array based on whitespace
-    # ForEach-Object applies Canonicalize-Tag to each tag
+    # ForEach-Object applies ConvertTo-CanonicalTag to each tag
     # Example: 'Red-Tailed Hawk passeriformes' becomes @('redtailedhawk', 'passeriformes')
-    $photoTags = ($photo.tags -split '\s+') | ForEach-Object { Canonicalize-Tag $_ }
+    $photoTags = ($photo.tags -split '\s+') | ForEach-Object { ConvertTo-CanonicalTag $_ }
     
     # Find lookup table keys that match the photo's canonicalized tags
     # Explanation of the pipeline:
