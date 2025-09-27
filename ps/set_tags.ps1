@@ -212,7 +212,7 @@ foreach ($item in $data) {
     # - Where-Object { $_ }: Filters out any null or empty values to ensure only valid tags are included
     # Example: If $Tag = @('Order', 'Family') and $item.Order = 'Passeriformes', $item.Family = 'Paridae',
     #          $newTags will contain @('Passeriformes', 'Paridae')
-    $newTags = $Tag | ForEach-Object { $item.$_ } | Where-Object { $_ }
+    $newTags = $Tag | ForEach-Object { $item.$_ } | Where-Object { $_ } | ForEach-Object { "`"$_`"" }
 
     # Add IOC-style tags if -List parameter is specified
     # These tags follow a structured format (e.g., listname:binomial="species")
