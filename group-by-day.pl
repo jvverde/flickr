@@ -8,7 +8,7 @@
 #   and creates or updates a photoset named 'B0 - YYYY/MM/DD' for each date with at
 #   least a minimum number of unique sequence numbers (default: 5). Photos are added
 #   to the photoset, with the primary photo for new sets removed from the addition
-#   list to avoid duplicate errors.
+#   list to avoid duplicate errors. With --last, filters photos by upload date.
 #
 # Functionality:
 #   - Fetches photos with the specified machine tag using the Flickr API.
@@ -22,16 +22,18 @@
 #
 # Command-Line Options:
 #   -h, --help        Display this help message and exit.
-#   -d, --days N      Process photos from the last N days.
+#   -d, --days N      Process photos from the last N days (date taken).
 #   -a, --after DATE  Process photos taken after DATE (YYYY-MM-DD).
 #   -b, --before DATE Process photos taken before DATE (YYYY-MM-DD).
 #   -m, --min-photos N Minimum number of unique tag sequence values to create a set (default: 5).
 #   -t, --tag TAG     Machine tag namespace to search (default: 'ioc151').
 #   -n, --dry-run     Simulate actions without modifying Flickr data.
+#   -l, --last N      Process photos uploaded in last N days.
 #
 # Usage Examples:
 #   ./flickr_photoset_by_date.pl                  # Process all photos with ioc151:seq tags
-#   ./flickr_photoset_by_date.pl -d 30 -n         # Dry-run for last 30 days
+#   ./flickr_photoset_by_date.pl -d 30 -n         # Dry-run for last 30 days (date taken)
+#   ./flickr_photoset_by_date.pl -l 7             # Process photos uploaded in last 7 days
 #   ./flickr_photoset_by_date.pl -a 2023-01-01 -t taxonomy  # Process photos after 2023-01-01 with taxonomy:seq tags
 #   ./flickr_photoset_by_date.pl -a 2023-01-01 -b 2023-12-31 -m 10  # Process photos in 2023 with min 10 unique tags
 #
@@ -47,6 +49,7 @@
 #   - Logs use photo titles for readability, with detailed messages for skipped, added, or already-in-set photos.
 #   - The script handles pagination for large photo and photoset collections (up to 500 per page).
 #   - Errors are logged with warnings, except for 'Photo already in set', which is logged as a status message.
+#   - With --last, photos are filtered by upload date but grouped by date taken for photoset assignment.
 
 use strict;
 use warnings;
@@ -66,11 +69,13 @@ my $after;                  # Earliest date for photos (YYYY-MM-DD)
 my $before;                 # Latest date for photos (YYYY-MM-DD)
 my $min_photos = 5;         # Minimum unique tag sequence values to create a set
 my $tag = 'ioc151';         # Machine tag namespace (e.g., 'ioc151' for 'ioc151:seq=nnnn')
+my $last;                   # Number of days for photos uploaded (for --last)
 
 # Parse command-line options using Getopt::Long
 GetOptions(
     'h|help' => \$help,             # Help flag
-    'd|days=i' => \$days,           # Integer: last N days
+    'l|last=i' => \$last,           # Integer: Uploaded in last N days
+    'd|days=i' => \$days,           # Integer: Taken in last N days
     'a|after=s' => \$after,         # String: date in YYYY-MM-DD
     'b|before=s' => \$before,       # String: date in YYYY-MM-DD
     'm|min-photos=i' => \$min_photos, # Integer: minimum unique tags
@@ -87,12 +92,13 @@ if ($help) {
     print "Usage: $0 [OPTIONS]";
     print "Options:";
     print "  -h, --help        Show this help message and exit";
-    print "  -d, --days        Process photos from the last N days";
+    print "  -d, --days        Process photos from the last N days (date taken)";
     print "  -a, --after       Process photos taken after this date (YYYY-MM-DD)";
     print "  -b, --before      Process photos taken before this date (YYYY-MM-DD)";
     print "  -m, --min-photos  Minimum number of unique $tag:seq values to create a set (default: $min_photos)";
     print "  -t, --tag         Machine tag namespace to search (default: '$tag')";
     print "  -n, --dry-run     Simulate without making changes";
+    print "  -l, --last        Process photos uploaded in last N days";
     print "";
     print "NOTE: This script assumes the user's Flickr API tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'.";
     exit;
@@ -111,17 +117,20 @@ sub validate_date {
 # Validate --after and --before options if provided
 validate_date($after, '--after') if defined $after;
 validate_date($before, '--before') if defined $before;
-# Validate --days if provided
+# Validate --days or --last if provided
 die "Error: --days must be a positive integer" if defined $days && $days <= 0;
+die "Error: --last must be a positive integer" if defined $last && $last <= 0;
 
 # Calculate date range for photo filtering
-my ($min_taken_date, $max_taken_date);
+my ($min_taken_date, $max_taken_date, $min_upload_date);
 if (defined $days) {
     # If --days is specified, calculate date range from current time
     my $now = time;
     $min_taken_date = strftime("%Y-%m-%d", localtime($now - $days * 86400));
     $max_taken_date = strftime("%Y-%m-%d", localtime($now));
 }
+$min_upload_date = strftime("%Y-%m-%d", localtime(time - $last * 86400)) if defined $last;
+
 # Override with --after or --before if specified
 $min_taken_date = $after if defined $after;
 $max_taken_date = $before if defined $before;
@@ -144,6 +153,7 @@ my $search_params = {
 # Add date filters if specified
 $search_params->{min_taken_date} = $min_taken_date if defined $min_taken_date;
 $search_params->{max_taken_date} = $max_taken_date if defined $max_taken_date;
+$search_params->{min_upload_date} = $min_upload_date if defined $min_upload_date;
 
 # Fetch photos with pagination
 while ($page <= $total_pages) {
@@ -169,19 +179,19 @@ my $all_photosets = [];  # Array to store all photosets
 my $ps_page = 1;         # Current photoset page
 my $ps_pages = 1;        # Total photoset pages
 while ($ps_page <= $ps_pages) {
-    my $ps_response = $flickr->execute_method('flickr.photosets.getList', {
+    my $response = $flickr->execute_method('flickr.photosets.getList', {
         per_page => 500,
         page => $ps_page,
     });
 
     # Handle API errors by retrying the page
-    warn "Error fetching photosets page $ps_page: $ps_response->{error_message}" and redo unless $ps_response->{success};
+    warn "Error fetching photosets page $ps_page: $response->{error_message}" and redo unless $response->{success};
 
     # Extract photosets from response
-    my $ps_bunch = $ps_response->as_hash->{photosets}->{photoset};
+    my $ps_bunch = $response->as_hash->{photosets}->{photoset};
     $ps_bunch = [ $ps_bunch ] unless 'ARRAY' eq ref $ps_bunch;  # Ensure array reference
     push @$all_photosets, @$ps_bunch;  # Append photosets to main array
-    $ps_pages = $ps_response->as_hash->{photosets}->{pages};  # Update total pages
+    $ps_pages = $response->as_hash->{photosets}->{pages};  # Update total pages
     $ps_page++;
 }
 
@@ -204,14 +214,13 @@ foreach my $photo (@$all_photos) {
     my @machine_tags = split /\s+/, $machine_tags_str;
 
     # Extract sequence number from machine tag (e.g., 'ioc151:seq=8530')
-    my $seq;
-    foreach my $mt (@machine_tags) {
-        if ($mt =~ /^\Q$tag\E:seq=(\d+)$/i) {  # Case-insensitive match
-            $seq = $1;
-            last;
-        }
-    }
-    next unless defined $seq;  # Skip if no valid sequence number
+    # Initialize index
+    my $i = 0;
+    # Loop while tags remain and no match is found, incrementing index if condition is true
+    $i++ while ($i < @machine_tags && $machine_tags[$i] !~ /^\Q$tag\E:seq=(?P<seq_num>\d+)$/i);
+    next unless $i < @machine_tags;  # Skip if no valid sequence number
+    # Assign sequence number if a match was found
+    my $seq = $+{seq_num};
 
     # Store photo ID and title (with 'Untitled' fallback)
     push @{$date_groups{$date}{$seq}}, { id => $photo->{id}, title => $photo->{title} || 'Untitled' };
@@ -251,24 +260,21 @@ foreach my $date (sort keys %date_groups) {
     if (!$set_id) {
         # Create new photoset
         my $primary_seq = (keys %{$date_groups{$date}})[0];  # Select first sequence
+        # Ensure sequence exists and has photos before selecting primary photo
+        next unless defined $date_groups{$date}{$primary_seq} && @{$date_groups{$date}{$primary_seq}};
         my $primary_photo = shift @{$date_groups{$date}{$primary_seq}};  # Remove primary photo
         my $primary_photo_id = $primary_photo->{id};  # Get primary photo ID
-        if ($dry_run) {
-            # Simulate photoset creation in dry-run mode
-            print "  DRY RUN: Would create new set '$set_title' with primary photo '$primary_photo->{title}' ($tag:seq=$primary_seq).";
-        } else {
-            # Create photoset via Flickr API
-            my $create_response = $flickr->execute_method('flickr.photosets.create', {
-                title => $set_title,
-                primary_photo_id => $primary_photo_id,
-            });
-            if (!$create_response->{success}) {
-                warn "Error creating set '$set_title': $create_response->{error_message}";
-                next;
-            }
-            $set_id = $create_response->as_hash->{photoset}->{id};
-            print "  Created new set '$set_title' with primary photo '$primary_photo->{title}' ($tag:seq=$primary_seq).";
-        }
+        # Simulate photoset creation in dry-run mode and skip to next date group
+        $total_sets_updated++ and print "  DRY RUN: Would create new set '$set_title' with primary photo '$primary_photo->{title}' ($tag:seq=$primary_seq)." and next if $dry_run;
+        # Create photoset via Flickr API
+        my $create_response = $flickr->execute_method('flickr.photosets.create', {
+            title => $set_title,
+            primary_photo_id => $primary_photo_id,
+        });
+        # Warn and skip if photoset creation fails
+        warn "Error creating set '$set_title': $create_response->{error_message}" and next unless $create_response->{success};
+        $set_id = $create_response->as_hash->{photoset}->{id};
+        print "  Created new set '$set_title' with primary photo '$primary_photo->{title}' ($tag:seq=$primary_seq).";
         # Remove empty sequence array if necessary
         delete $date_groups{$date}{$primary_seq} unless @{$date_groups{$date}{$primary_seq}};
         $total_sets_updated++;
@@ -283,28 +289,24 @@ foreach my $date (sort keys %date_groups) {
     foreach my $seq (keys %{$date_groups{$date}}) {
         foreach my $photo (@{$date_groups{$date}{$seq}}) {
             my $photo_id = $photo->{id};
-            if ($dry_run) {
-                # Simulate adding photo in dry-run mode
-                print "    DRY RUN: Would add photo '$photo->{title}' ($tag:seq=$seq) to set '$set_title'.";
+            # Simulate adding photo in dry-run mode, increment count, and skip to next photo
+            print "    DRY RUN: Would add photo '$photo->{title}' ($tag:seq=$seq) to set '$set_title'." and ++$photos_added and next if $dry_run;
+            # Add photo to photoset via Flickr API
+            my $add_response = $flickr->execute_method('flickr.photosets.addPhoto', {
+                photoset_id => $set_id,
+                photo_id => $photo_id,
+            });
+            if ($add_response->{success}) {
                 $photos_added++;
+                print "    Added photo '$photo->{title}' ($tag:seq=$seq) to set '$set_title'.";
             } else {
-                # Add photo to photoset via Flickr API
-                my $add_response = $flickr->execute_method('flickr.photosets.addPhoto', {
-                    photoset_id => $set_id,
-                    photo_id => $photo_id,
-                });
-                if ($add_response->{success}) {
-                    $photos_added++;
-                    print "    Added photo '$photo->{title}' ($tag:seq=$seq) to set '$set_title'.";
+                my $msg = $add_response->{error_message};
+                if ($msg !~ /Photo already in set/i) {
+                    # Log unexpected errors as warnings
+                    warn "Error adding photo '$photo->{title}' to set '$set_title': $msg";
                 } else {
-                    my $msg = $add_response->{error_message};
-                    if ($msg !~ /Photo already in set/i) {
-                        # Log unexpected errors as warnings
-                        warn "Error adding photo '$photo->{title}' to set '$set_title': $msg";
-                    } else {
-                        # Log 'already in set' as a status message
-                        print "    Photo '$photo->{title}' ($tag:seq=$seq) already in set '$set_title'.";
-                    }
+                    # Log 'already in set' as a status message
+                    print "    Photo '$photo->{title}' ($tag:seq=$seq) already in set '$set_title'.";
                 }
             }
         }
