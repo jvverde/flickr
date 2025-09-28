@@ -9,8 +9,6 @@ use JSON;
 use POSIX qw(strftime);
 use Time::Local;
 use DateTime;
-use Data::Dumper;
-
 
 binmode(STDOUT, ':utf8');
 $\ = "\n";
@@ -33,7 +31,7 @@ if ($@) {
 sub usage {
     print <<'USAGE';
 Usage:
-  perl flickr_outside_portugal.pl [options]
+  perl flickr_timezone.pl [options]
 
 Options:
   -t, --tag <tag>       : Optional tag to search.
@@ -53,12 +51,12 @@ GetOptions(
 );
 
 # ------------------------------
-# Prepare search
+# Prepare Flickr search
 my %search_params = (
     user_id  => 'me',
     per_page => 500,
     page     => 1,
-    extras   => 'geo,date_taken',  # include geo info and datetaken
+    extras   => 'geo,date_taken',  # get lat/lon and datetaken
 );
 
 $search_params{tags} = $tag if defined $tag;
@@ -92,7 +90,6 @@ my $ua = LWP::UserAgent->new(timeout => 10);
 # ------------------------------
 # Process each photo
 foreach my $photo (@matching_photos) {
-    #print Dumper $photo;
     next unless $photo->{id} && $photo->{owner};
 
     my $lat = $photo->{latitude};
@@ -112,25 +109,36 @@ foreach my $photo (@matching_photos) {
 
     # ------------------------------
     # Query GeoNames for timezone at photo timestamp
-    #my $iso_time = strftime("%Y-%m-%dT%H:%M:%SZ", gmtime($ts));
-    #my $iso_time = strftime("%Y-%m-%dT%H:%M:%S.000Z", gmtime($ts));
+    # Format: date=yyyy-MM-ddtHH:mm:ss.000Z (t lowercase)
     my $iso_time = strftime("%Y-%m-%dt%H:%M:%S.000Z", gmtime($ts));
     my $geo_url = "http://api.geonames.org/timezoneJSON?lat=$lat&lng=$lon&username=$geonames_user&date=$iso_time";
-    print $geo_url;
-
     my $geo_res = $ua->get($geo_url);
 
     my ($tz_name, $diff_hours) = ('unknown', 'unknown');
     if ($geo_res->is_success) {
         my $data = decode_json($geo_res->decoded_content);
-        #print Dumper $data;
-        if ($data->{timezoneId} && defined $data->{gmtOffset}) {
-            $tz_name = $data->{timezoneId};
-            my $photo_offset = $data->{gmtOffset};  # hours
 
+        # timezoneId from root
+        $tz_name = $data->{timezoneId} // 'unknown';
+
+        # historical DST-aware offset from dates array
+        my $photo_offset = $data->{gmtOffset}; #this is a fallback
+
+        if ($data->{dates} && ref $data->{dates} eq 'ARRAY') {
+            for my $entry (@{ $data->{dates} }) {
+                if (exists $entry->{offsetToGmt}) {
+                    $photo_offset = $entry->{offsetToGmt} + 0;
+                    last;
+                }
+            }
+        }
+        print "Offset at $tz_name: $photo_offset";
+
+        if (defined $photo_offset) {
             # Lisbon offset at same timestamp
             my $dt = DateTime->from_epoch(epoch => $ts, time_zone => 'Europe/Lisbon');
             my $lisbon_offset = $dt->offset / 3600;
+            print "Offset at Lisbon: $lisbon_offset";
 
             $diff_hours = $photo_offset - $lisbon_offset;
         }
