@@ -56,6 +56,7 @@ my %search_params = (
     user_id  => 'me',
     per_page => 500,
     page     => 1,
+    has_geo  => 1,
     extras   => 'geo,date_taken',  # get lat/lon and datetaken
 );
 
