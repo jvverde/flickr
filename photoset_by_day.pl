@@ -1,11 +1,11 @@
 #!/usr/bin/perl
-# flickr_photoset_by_date.pl
+# photoset_by_day.pl
 #
 # Purpose:
 #   This script automates the organization of Flickr photos into photosets based on
 #   their date taken and a specified machine tag (default: 'ioc151:seq=nnnn'). It
 #   searches for photos with the given tag, groups them by date and sequence number,
-#   and creates or updates a photoset named 'B0 - YYYY/MM/DD' for each date with at
+#   and creates or updates a photoset named 'YYYY/MM/DD' for each date with at
 #   least a minimum number of unique sequence numbers (default: 5). Photos are added
 #   to the photoset, with the primary photo for new sets removed from the addition
 #   list to avoid duplicate errors. With --last, filters photos by upload date.
@@ -31,11 +31,11 @@
 #   -l, --last N      Process photos uploaded in last N days.
 #
 # Usage Examples:
-#   ./flickr_photoset_by_date.pl                  # Process all photos with ioc151:seq tags
-#   ./flickr_photoset_by_date.pl -d 30 -n         # Dry-run for last 30 days (date taken)
-#   ./flickr_photoset_by_date.pl -l 7             # Process photos uploaded in last 7 days
-#   ./flickr_photoset_by_date.pl -a 2023-01-01 -t taxonomy  # Process photos after 2023-01-01 with taxonomy:seq tags
-#   ./flickr_photoset_by_date.pl -a 2023-01-01 -b 2023-12-31 -m 10  # Process photos in 2023 with min 10 unique tags
+#   ./photoset_by_day.pl                  # Process all photos with ioc151:seq tags
+#   ./photoset_by_day.pl -d 30 -n         # Dry-run for last 30 days (date taken)
+#   ./photoset_by_day.pl -l 7             # Process photos uploaded in last 7 days
+#   ./photoset_by_day.pl -a 2023-01-01 -t taxonomy  # Process photos after 2023-01-01 with taxonomy:seq tags
+#   ./photoset_by_day.pl -a 2023-01-01 -b 2023-12-31 -m 10  # Process photos in 2023 with min 10 unique tags
 #
 # Assumptions:
 #   - The Flickr API configuration is stored in '$ENV{HOME}/saved-flickr.st'.
@@ -70,6 +70,7 @@ my $before;                 # Latest date for photos (YYYY-MM-DD)
 my $min_photos = 5;         # Minimum unique tag sequence values to create a set
 my $tag = 'ioc151';         # Machine tag namespace (e.g., 'ioc151' for 'ioc151:seq=nnnn')
 my $last;                   # Number of days for photos uploaded (for --last)
+my $token = 'orderNO';      # Token for new set description (default: 'orderNO')
 
 # Parse command-line options using Getopt::Long
 GetOptions(
@@ -81,13 +82,14 @@ GetOptions(
     'm|min-photos=i' => \$min_photos, # Integer: minimum unique tags
     't|tag=s' => \$tag,             # String: machine tag namespace
     'n|dry-run' => \$dry_run,       # Dry-run flag
+    'token=s' => \$token,           # String: token for description
 );
 
 # Display help message and exit if --help is specified
 if ($help) {
     print "This script searches all Flickr photos for the user 'me' with machine tag '$tag:seq=nnnn',";
     print "groups them by the date taken and $tag:seq, and if more than $min_photos unique $tag:seq values";
-    print "are found on the same date, creates a new photoset named 'B0 - YYYY/MM/DD' (or adds to existing)";
+    print "are found on the same date, creates a new photoset named 'YYYY/MM/DD' (or adds to existing)";
     print "and adds the relevant photos to it.";
     print "Usage: $0 [OPTIONS]";
     print "Options:";
@@ -99,6 +101,7 @@ if ($help) {
     print "  -t, --tag         Machine tag namespace to search (default: '$tag')";
     print "  -n, --dry-run     Simulate without making changes";
     print "  -l, --last        Process photos uploaded in last N days";
+    print "  --token           Token for new set description (default: '$token')";
     print "";
     print "NOTE: This script assumes the user's Flickr API tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'.";
     exit;
@@ -249,10 +252,10 @@ foreach my $date (sort keys %date_groups) {
         next;
     }
 
-    # Format photoset title as 'B0 - YYYY/MM/DD'
+    # Format photoset title as 'YYYY/MM/DD'
     my $formatted_date = $date;
     $formatted_date =~ s/-/\//g;
-    my $set_title = "B0 - $formatted_date";
+    my $set_title = "$formatted_date";
 
     # Check if photoset already exists
     my $set_id = $existing_sets{$set_title};
@@ -270,6 +273,7 @@ foreach my $date (sort keys %date_groups) {
         my $create_response = $flickr->execute_method('flickr.photosets.create', {
             title => $set_title,
             primary_photo_id => $primary_photo_id,
+            description => "$token:B0-00",
         });
         # Warn and skip if photoset creation fails
         warn "Error creating set '$set_title': $create_response->{error_message}" and next unless $create_response->{success};

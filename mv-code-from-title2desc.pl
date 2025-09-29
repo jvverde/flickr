@@ -175,7 +175,7 @@ while ($page <= $total_pages) {
 # Process each set
 foreach my $set (@$sets) {
     my $title = $set->{title};
-    my $description = $set->{description} || '';
+    my $description = ref $set->{description} eq 'HASH' ? '' : $set->{description} || '';
     my $new_title = $title;
     my $new_description = $description;
 

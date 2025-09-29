@@ -6,7 +6,7 @@ use Flickr::API;
 use Data::Dumper;
 
 # ------------------------------------------------------------------------------
-# Script: flickr_sets_sort.pl
+# Script: sets_sort.pl
 #
 # Description:
 #   This script retrieves all Flickr photosets (albums) for the authenticated user,
