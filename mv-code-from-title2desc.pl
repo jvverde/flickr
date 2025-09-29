@@ -5,6 +5,62 @@ use Getopt::Long;
 use Flickr::API;
 use Data::Dumper;
 
+# This script updates Flickr photoset titles and descriptions based on a specific
+# pattern in the title. It extracts a pattern from the title, optionally adds it
+# to the description with a user-specified token, and optionally removes the
+# pattern from the title. The script processes sets in batches using Flickr API
+# pagination and supports dry-run mode for testing changes without applying them.
+#
+# Default Pattern:
+#   The script matches titles starting with the pattern:
+#     ^\s*[0-9A-F]{2}\s*-\s*[0-9A-F]{2,4}\s*-\s*
+#   Example: "A3 - 2BED - Tangara inornata" matches, with "A3 - 2BED - " extracted.
+#
+# Features:
+#   - Extracts the pattern and sanitizes it (removes whitespace and trailing hyphens).
+#   - Adds or replaces a line in the description with "<token>:=<sanitized_pattern>".
+#   - Removes the pattern from the title if --remove is specified.
+#   - Supports --dry-run to simulate changes without modifying Flickr.
+#   - Limits updates to a specified number of sets with --count (ignored in dry-run).
+#   - Further restricts processed sets with --match to filter titles by a custom regex.
+#   - Handles API errors by warning, sleeping for 1 second, and retrying.
+#   - Requires a Flickr API config file at $ENV{HOME}/saved-flickr.st.
+#
+# Command-Line Options:
+#   -h, --help        Display this help message and exit.
+#   -t, --token=STR   Prepend the specified token to the sanitized pattern in the description.
+#   -n, --dry-run     Simulate changes without calling the Flickr API.
+#   -r, --remove      Remove the matched pattern from the set title.
+#   -c, --count=NUM   Limit updates to NUM sets (ignored in dry-run).
+#   -m, --match=REGEX Only process sets with titles matching the given regex (applied after default pattern).
+#
+# Example Commands:
+#   1. Add token to description:
+#      ./flickr_sets.pl --token=orderNO
+#      - For title "A3 - 2BED - Tangara inornata", adds "orderNO:=A3-2BED" to description.
+#      Output: Updated description for set 'A3 - 2BED - Tangara inornata' to include 'orderNO:=A3-2BED'
+#
+#   2. Remove pattern from title and add token:
+#      ./flickr_sets.pl --token=orderNO --remove
+#      - For title "B0 - 123 - Album", updates title to "Album" and adds "orderNO:=B0-123" to description.
+#      Output: Updated title for set 'B0 - 123 - Album' to 'Album'
+#              Updated description for set 'B0 - 123 - Album' to include 'orderNO:=B0-123'
+#
+#   3. Restrict to titles starting with "B0":
+#      ./flickr_sets.pl --token=orderNO --match="^B0"
+#      - Only processes sets like "B0 - 123 - Album", ignoring "A3 - 2BED - Tangara inornata".
+#      Output: Updated description for set 'B0 - 123 - Album' to include 'orderNO:=B0-123'
+#
+#   4. Dry-run with count limit:
+#      ./flickr_sets.pl --token=orderNO --dry-run --count=1
+#      - Simulates updating one set without API calls.
+#      Output: Dry-run: Would update description for set 'A3 - 2BED - Tangara inornata' to include 'orderNO:=A3-2BED'
+#
+# Notes:
+#   - The script assumes the Flickr API config file exists at $ENV{HOME}/saved-flickr.st.
+#   - Invalid --match patterns cause the script to exit with an error.
+#   - API errors trigger a warning, 1-second sleep, and retry (use with caution to avoid infinite loops).
+
 $\ = "\n";
 my ($help, $token, $dry_run, $remove, $count, $match);
 
@@ -18,16 +74,54 @@ GetOptions(
 );
 
 if ($help) {
-    print "This script processes Flickr set titles and descriptions";
-    print "Usage: $0 [OPTIONS]";
-    print "Options:";
-    print "  -h, --help        Show this help message and exit";
-    print "  -t, --token=STR   Token to prepend to pattern in description";
-    print "  -n, --dry-run     Simulate changes without applying them";
-    print "  -r, --remove      Remove pattern from set title";
-    print "  -c, --count=NUM   Limit the number of sets to update (ignored in dry-run)";
-    print "  -m, --match=REGEX Further restrict sets to those with titles matching the given regex";
-    print "\nNOTE: It assumes the user's tokens are initialized in the file '$ENV{HOME}/saved-flickr.st'";
+    print <<'END_HELP';
+flickr_sets.pl - Update Flickr photoset titles and descriptions
+
+This script processes Flickr photosets whose titles match a specific pattern,
+optionally updating their descriptions with a token and sanitized pattern, and
+optionally removing the pattern from the title. It uses the Flickr API and
+requires a configuration file at $HOME/saved-flickr.st.
+
+Usage: $0 [OPTIONS]
+
+Options:
+  -h, --help        Display this help message and exit.
+  -t, --token=STR   Add or replace a line in the description with "<token>:=<sanitized_pattern>",
+                    where the pattern is extracted from the title and sanitized (whitespace and
+                    trailing hyphens removed).
+  -n, --dry-run     Simulate changes without modifying Flickr (ignores --count).
+  -r, --remove      Remove the matched pattern from the set title.
+  -c, --count=NUM   Limit updates to NUM sets (ignored in dry-run mode).
+  -m, --match=REGEX Further restrict processing to sets with titles matching the given regex,
+                    applied after the default pattern (^\\s*[0-9A-F]{2}\\s*-\\s*[0-9A-F]{2,4}\\s*-\\s*).
+
+Default Pattern:
+  The script matches titles starting with:
+    ^\\s*[0-9A-F]{2}\\s*-\\s*[0-9A-F]{2,4}\\s*-\\s*
+  Example: "A3 - 2BED - Tangara inornata" matches, extracting "A3 - 2BED - ".
+
+Examples:
+  1. Add token to description:
+     $0 --token=orderNO
+     - Updates description of "A3 - 2BED - Tangara inornata" to include "orderNO:=A3-2BED".
+
+  2. Remove pattern and add token:
+     $0 --token=orderNO --remove
+     - Updates title "B0 - 123 - Album" to "Album" and adds "orderNO:=B0-123" to description.
+
+  3. Restrict to titles starting with "B0":
+     $0 --token=orderNO --match="^B0"
+     - Only processes sets like "B0 - 123 - Album".
+
+  4. Simulate changes:
+     $0 --token=orderNO --dry-run --count=1
+     - Shows what would happen for one set without making API calls.
+
+Notes:
+  - Requires either --token or --remove to be specified.
+  - Invalid --match regex patterns will cause the script to exit with an error.
+  - API errors trigger a warning, 1-second sleep, and retry.
+END_HELP
     exit;
 }
 
