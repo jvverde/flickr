@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # =============================================================================
-# Script: photoset_sorter.pl
+# Script: sort-photos-in-sets.pl
 #
 # Description:
 #   This Perl script reorders photos within Flickr photosets for the authenticated
@@ -17,7 +17,7 @@
 #   module's authentication tools (e.g., via a separate authentication script).
 #
 # Usage:
-#   perl photoset_sorter.pl [OPTIONS]
+#   perl sort-photos-in-sets.pl [OPTIONS]
 #
 # Options:
 #   -h, --help          Display this help message and exit.
@@ -39,19 +39,19 @@
 #
 # Examples:
 #   1. Sort all photosets by date taken (default behavior):
-#      perl photoset_sorter.pl
+#      perl sort-photos-in-sets.pl
 #
 #   2. Sort photosets with titles containing 'vacation' by views, in descending order:
-#      perl photoset_sorter.pl -f vacation -s views -r
+#      perl sort-photos-in-sets.pl -f vacation -s views -r
 #
 #   3. Dry-run sort of all photosets by upload date:
-#      perl photoset_sorter.pl -s dateupload -n
+#      perl sort-photos-in-sets.pl -s dateupload -n
 #
 #   4. Custom sorting using machine tags (e.g., tag like 'album:order=5'):
-#      perl photoset_sorter.pl -s 'album:order:seq' -f 'My Album'
+#      perl sort-photos-in-sets.pl -s 'album:order:seq' -f 'My Album'
 #
 #   5. Reverse sort by last update, filtering to photosets starting with '2023':
-#      perl photoset_sorter.pl -f '^2023' -s lastupdate -r
+#      perl sort-photos-in-sets.pl -f '^2023' -s lastupdate -r
 #
 # Notes:
 #   - The script fetches data in pages (up to 500 items per page) to handle large collections.
@@ -100,7 +100,7 @@ if ($help) {
 This script reorders photos in Flickr photosets for the authenticated user based on specified criteria.
 It fetches photosets, filters them by title regex, sorts photos within each set, and reorders via the API.
 
-Usage: perl photoset_sorter.pl [OPTIONS]
+Usage: perl sort-photos-in-sets.pl [OPTIONS]
 
 Options:
   -h, --help          Show this help message and exit.
@@ -118,9 +118,9 @@ Options:
   -n, --dry-run      Simulate: Print photosets that would be sorted without reordering.
 
 Examples:
-  Sort all sets by date taken: perl photoset_sorter.pl
-  Sort '2023' sets by views descending: perl photoset_sorter.pl -f '^2023' -s views -r
-  Dry-run custom sort: perl photoset_sorter.pl -s 'album:order:seq' -n
+  Sort all sets by date taken: perl sort-photos-in-sets.pl
+  Sort '2023' sets by views descending: perl sort-photos-in-sets.pl -f '^2023' -s views -r
+  Dry-run custom sort: perl sort-photos-in-sets.pl -s 'album:order:seq' -n
 
 NOTE: Requires Flickr API tokens in '$ENV{HOME}/saved-flickr.st'.
 HELP

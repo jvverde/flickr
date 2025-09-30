@@ -6,24 +6,25 @@ use Flickr::API;
 use Data::Dumper;
 
 # ------------------------------------------------------------------------------
-# Script: sets_sort.pl
+# Script: sort-sets.pl
 #
 # Description:
 #   This script retrieves all Flickr photosets (albums) for the authenticated user,
-#   sorts them based on either a specified token value in the set description or
-#   the set title, and reorders them on Flickr using the Flickr API. It supports
-#   pagination to handle large numbers of sets and includes a dry-run mode to
-#   preview the sort order without making changes.
+#   sorts them based on either a specified token value in the set description (default: 'orderNO')
+#   or the set title if the --title flag is provided, and reorders them on Flickr using the
+#   Flickr API. It supports pagination to handle large numbers of sets and includes a dry-run
+#   mode to preview the sort order without making changes.
 #
 # Usage:
-#   perl flickr_sets_sort.pl [OPTIONS]
+#   perl flickr_sort-sets.pl [OPTIONS]
 #
 # Options:
 #   -h, --help        Display this help message and exit.
 #   -d, --desc token  Sort sets by the value in the format 'token:=value' found in
 #                     the set description. The value is matched using the regex
 #                     /^\s*token:=(\S+)/m, capturing non-whitespace characters.
-#                     If not provided, sets are sorted by title.
+#                     Defaults to 'orderNO' if not specified.
+#   -t, --title       Sort sets by title instead of the description token.
 #   -n, --dry-run     Print the sorted set order without applying changes to Flickr.
 #
 # Requirements:
@@ -33,20 +34,22 @@ use Data::Dumper;
 #   - The user must have write permissions for the Flickr account to reorder sets.
 #
 # Examples:
-#   1. Sort sets by title and reorder on Flickr:
-#      perl flickr_sets_sort.pl
+#   1. Sort sets by 'orderNO:=value' in descriptions and reorder on Flickr:
+#      perl flickr_sort-sets.pl
 #   2. Sort sets by the value of 'priority:=value' in descriptions:
-#      perl flickr_sets_sort.pl --desc priority
-#      (e.g., a set with description "priority:=2" sorts before "priority:=10")
-#   3. Preview sort order by 'priority:=value' without reordering:
-#      perl flickr_sets_sort.pl --desc priority --dry-run
-#      (Outputs set IDs, titles, and priority values)
+#      perl flickr_sort-sets.pl --desc priority
+#   3. Sort sets by title:
+#      perl flickr_sort-sets.pl --title
+#   4. Preview sort order by 'orderNO:=value' without reordering:
+#      perl flickr_sort-sets.pl --dry-run
+#   5. Preview sort order by 'priority:=value' without reordering:
+#      perl flickr_sort-sets.pl --desc priority --dry-run
 #
 # Notes:
 #   - Sorting is lexicographical (ASCII order) for token values and titles.
 #   - If a set lacks the specified token, it is assigned a default value of 'zzz'
 #     and sorts after sets with valid token values.
-#   - Non-ASCII values (e.g., 'priority:=é') are captured but sorted by UTF-8 byte
+#   - Non-ASCII values (e.g., 'orderNO:=é') are captured but sorted by UTF-8 byte
 #     order, which may not match linguistic expectations.
 #   - The script uses pagination (500 sets per page) to handle large collections.
 # ------------------------------------------------------------------------------
@@ -55,44 +58,50 @@ use Data::Dumper;
 $\ = "\n";
 
 # Declare variables for command-line options
-my ($help, $desc_token, $dry_run);
+my ($help, $desc_token, $dry_run, $sort_by_title);
 
 # Parse command-line options
 GetOptions(
     'h|help'     => \$help,        # Show help message
     'd|desc=s'   => \$desc_token,  # Token for sorting by description
+    't|title'    => \$sort_by_title, # Sort by title
     'n|dry-run'  => \$dry_run,     # Enable dry-run mode
 );
 
 # Display help message if requested
 if ($help) {
     print <<'END_HELP';
-flickr_sets_sort.pl - Sort and reorder Flickr photosets
+flickr_sort-sets.pl - Sort and reorder Flickr photosets
 
 Description:
   Retrieves all Flickr photosets for the authenticated user, sorts them by either
-  a specified token value in the format 'token:=value' in the set description or
-  by set title, and reorders them on Flickr. Supports pagination and dry-run mode.
+  a specified token value in the format 'token:=value' in the set description
+  (default: 'orderNO') or by set title if --title is specified, and reorders them
+  on Flickr. Supports pagination and dry-run mode.
 
 Usage:
-  perl flickr_sets_sort.pl [OPTIONS]
+  perl flickr_sort-sets.pl [OPTIONS]
 
 Options:
   -h, --help        Display this help message and exit.
   -d, --desc token  Sort sets by the value of 'token:=value' in the set description.
-                    Example: If token is 'priority', a description with
-                    'priority:=2' sorts before 'priority:=10' (lexicographical order).
-                    If not specified, sorts by set title.
+                    Defaults to 'orderNO'. Example: 'orderNO:=2' sorts before
+                    'orderNO:=10' (lexicographical order).
+  -t, --title       Sort sets by title instead of description token.
   -n, --dry-run     Print the sorted set order (ID, title, and token value if applicable)
                     without reordering sets on Flickr.
 
 Examples:
-  1. Sort by title and reorder:
-     perl flickr_sets_sort.pl
+  1. Sort by 'orderNO:=value' and reorder:
+     perl flickr_sort-sets.pl
   2. Sort by 'priority:=value' in descriptions:
-     perl flickr_sets_sort.pl --desc priority
-  3. Preview sort order for 'priority:=value' without changes:
-     perl flickr_sets_sort.pl --desc priority --dry-run
+     perl flickr_sort-sets.pl --desc priority
+  3. Sort by title:
+     perl flickr_sort-sets.pl --title
+  4. Preview sort order for 'orderNO:=value' without changes:
+     perl flickr_sort-sets.pl --dry-run
+  5. Preview sort order for 'priority:=value' without changes:
+     perl flickr_sort-sets.pl --desc priority --dry-run
 
 Requirements:
   - Flickr API configuration file at $ENV{HOME}/saved-flickr.st with valid tokens.
@@ -137,9 +146,15 @@ while ($page <= $total_pages) {
     $page++; # Move to next page
 }
 
+# Set default description token if not specified
+$desc_token = 'orderNO' unless $desc_token || $sort_by_title;
+
 # Sort the photosets
 my @sorted_sets;
-if ($desc_token) {
+if ($sort_by_title) {
+    # Sort by title in lexicographical order
+    @sorted_sets = sort { $a->{title} cmp $b->{title} } @$sets;
+} else {
     # Sort by token:=value in description
     @sorted_sets = sort {
         # Default value for sets without the token (sorts last)
@@ -157,9 +172,6 @@ if ($desc_token) {
         # Compare token values; fallback to title if equal
         $a_value cmp $b_value || $a->{title} cmp $b->{title}
     } @$sets;
-} else {
-    # Default: sort by title in lexicographical order
-    @sorted_sets = sort { $a->{title} cmp $b->{title} } @$sets;
 }
 
 # Extract set IDs for reordering

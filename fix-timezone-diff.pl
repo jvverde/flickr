@@ -152,7 +152,7 @@ Options:
   -d, --days <num>        : Limit to photos uploaded in last <num> days.
   -c, --count <num>       : Limit the number of photos to process.
   -n, --dry-run           : Preview changes without updating photo dates.
-  -d, --debug             : Print debug output for API responses.
+      --debug             : Print debug output for API responses.
   -h, --help              : Show this help.
 
 Note: --after and --before can be used independently or together, in YYYY-MM-DD format.
@@ -173,7 +173,7 @@ GetOptions(
     "d|days=i" => \$days,              # Optional number of days to filter recent uploads
     "c|count=i" => \$count,            # Optional limit on number of photos to process
     "n|dry-run" => \$dry_run,          # Enable dry-run mode to preview changes
-    "d|debug" => \$debug,              # Enable debug output for API responses
+    "debug" => \$debug,              # Enable debug output for API responses
     "h|help" => \&usage,               # Display help and exit
 ) or usage();  # Exit with usage if GetOptions fails
 
