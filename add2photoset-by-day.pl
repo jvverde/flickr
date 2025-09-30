@@ -1,19 +1,19 @@
 #!/usr/bin/perl
-# photoset_by_day.pl
+# add2photoset-by-day.pl
 #
 # Purpose:
 #   This script automates the organization of Flickr photos into photosets based on
 #   their date taken and a specified machine tag (default: 'ioc151:seq=nnnn'). It
 #   searches for photos with the given tag, groups them by date and sequence number,
 #   and creates or updates a photoset named 'YYYY/MM/DD' for each date with at
-#   least a minimum number of unique sequence numbers (default: 5). Photos are added
+#   least a minimum number of unique sequence numbers (default: 3). Photos are added
 #   to the photoset, with the primary photo for new sets removed from the addition
 #   list to avoid duplicate errors. With --last, filters photos by upload date.
 #
 # Functionality:
 #   - Fetches photos with the specified machine tag using the Flickr API.
 #   - Groups photos by date taken (YYYY-MM-DD) and sequence number from the tag.
-#   - Skips dates with fewer than the minimum unique sequence numbers, logging skipped
+#   - Skips dates with fewer than the minimum unique sequence numbers for new sets, logging skipped
 #     photo titles.
 #   - Creates a new photoset or uses an existing one for each qualifying date.
 #   - Adds photos to the photoset, handling cases where photos are already in the set.
@@ -25,17 +25,17 @@
 #   -d, --days N      Process photos from the last N days (date taken).
 #   -a, --after DATE  Process photos taken after DATE (YYYY-MM-DD).
 #   -b, --before DATE Process photos taken before DATE (YYYY-MM-DD).
-#   -m, --min-photos N Minimum number of unique tag sequence values to create a set (default: 5).
+#   -m, --min-photos N Minimum number of unique tag sequence values to create a set (default: 3).
 #   -t, --tag TAG     Machine tag namespace to search (default: 'ioc151').
 #   -n, --dry-run     Simulate actions without modifying Flickr data.
 #   -l, --last N      Process photos uploaded in last N days.
 #
 # Usage Examples:
-#   ./photoset_by_day.pl                  # Process all photos with ioc151:seq tags
-#   ./photoset_by_day.pl -d 30 -n         # Dry-run for last 30 days (date taken)
-#   ./photoset_by_day.pl -l 7             # Process photos uploaded in last 7 days
-#   ./photoset_by_day.pl -a 2023-01-01 -t taxonomy  # Process photos after 2023-01-01 with taxonomy:seq tags
-#   ./photoset_by_day.pl -a 2023-01-01 -b 2023-12-31 -m 10  # Process photos in 2023 with min 10 unique tags
+#   ./add2photoset-by-day.pl                  # Process all photos with ioc151:seq tags
+#   ./add2photoset-by-day.pl -d 30 -n         # Dry-run for last 30 days (date taken)
+#   ./add2photoset-by-day.pl -l 7             # Process photos uploaded in last 7 days
+#   ./add2photoset-by-day.pl -a 2023-01-01 -t taxonomy  # Process photos after 2023-01-01 with taxonomy:seq tags
+#   ./add2photoset-by-day.pl -a 2023-01-01 -b 2023-12-31 -m 10  # Process photos in 2023 with min 10 unique tags
 #
 # Assumptions:
 #   - The Flickr API configuration is stored in '$ENV{HOME}/saved-flickr.st'.
@@ -67,7 +67,7 @@ my $dry_run;                # Flag to simulate actions without API changes
 my $days;                   # Number of recent days to process
 my $after;                  # Earliest date for photos (YYYY-MM-DD)
 my $before;                 # Latest date for photos (YYYY-MM-DD)
-my $min_photos = 5;         # Minimum unique tag sequence values to create a set
+my $min_photos = 3;         # Minimum unique tag sequence values to create a set
 my $tag = 'ioc151';         # Machine tag namespace (e.g., 'ioc151' for 'ioc151:seq=nnnn')
 my $last;                   # Number of days for photos uploaded (for --last)
 my $token = 'orderNO';      # Token for new set description (default: 'orderNO')
@@ -240,18 +240,6 @@ foreach my $date (sort keys %date_groups) {
 
     $total_sets_processed++;
 
-    # Skip dates with fewer than $min_photos unique sequence numbers
-    if ($unique_seqs < $min_photos) {
-        print "  Skipping: fewer than $min_photos unique $tag:seq values.";
-        # Log each skipped photo with its title and sequence
-        foreach my $seq (sort { $a <=> $b } keys %{$date_groups{$date}}) {
-            foreach my $photo (@{$date_groups{$date}{$seq}}) {
-                print "    Skipped photo '$photo->{title}' ($tag:seq=$seq).";
-            }
-        }
-        next;
-    }
-
     # Format photoset title as 'YYYY/MM/DD'
     my $formatted_date = $date;
     $formatted_date =~ s/-/\//g;
@@ -261,6 +249,18 @@ foreach my $date (sort keys %date_groups) {
     my $set_id = $existing_sets{$set_title};
 
     if (!$set_id) {
+        # Skip dates with fewer than $min_photos unique sequence numbers for new sets
+        if ($unique_seqs < $min_photos) {
+            print "  Skipping: fewer than $min_photos unique $tag:seq values.";
+            # Log each skipped photo with its title and sequence
+            foreach my $seq (sort { $a <=> $b } keys %{$date_groups{$date}}) {
+                foreach my $photo (@{$date_groups{$date}{$seq}}) {
+                    print "    Skipped photo '$photo->{title}' ($tag:seq=$seq).";
+                }
+            }
+            next;
+        }
+
         # Create new photoset
         my $primary_seq = (keys %{$date_groups{$date}})[0];  # Select first sequence
         # Ensure sequence exists and has photos before selecting primary photo
