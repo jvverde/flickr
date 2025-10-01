@@ -70,7 +70,7 @@ GetOptions(
 
 # Display help message if requested
 if ($help) {
-    print <<'END_HELP';
+    print <<"END_HELP";
 flickr_sort-sets.pl - Sort and reorder Flickr photosets
 
 Description:
@@ -80,7 +80,7 @@ Description:
   on Flickr. Supports pagination and dry-run mode.
 
 Usage:
-  perl flickr_sort-sets.pl [OPTIONS]
+  $0 [OPTIONS]
 
 Options:
   -h, --help        Display this help message and exit.
@@ -93,15 +93,15 @@ Options:
 
 Examples:
   1. Sort by 'orderNO:=value' and reorder:
-     perl flickr_sort-sets.pl
+     $0
   2. Sort by 'priority:=value' in descriptions:
-     perl flickr_sort-sets.pl --desc priority
+     $0 --desc priority
   3. Sort by title:
-     perl flickr_sort-sets.pl --title
+     $0 --title
   4. Preview sort order for 'orderNO:=value' without changes:
-     perl flickr_sort-sets.pl --dry-run
+     $0 --dry-run
   5. Preview sort order for 'priority:=value' without changes:
-     perl flickr_sort-sets.pl --desc priority --dry-run
+     $0 --desc priority --dry-run
 
 Requirements:
   - Flickr API configuration file at $ENV{HOME}/saved-flickr.st with valid tokens.

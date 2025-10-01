@@ -89,21 +89,21 @@ Options:
 Examples:
  $0 -h
  $0 -F Tan -t IOC151 -n
- $0 -F '^15.+Tan' -t IOC151 -n
- $0 -F '^15.+Tan' -t IOC151
- $0 -F '^15|Vidu.+dae$|Plo.+dae$|Estri.+dae$' -t IOC151
- $0 -F '^15|Estri.+dae$' -t IOC151
- $0 -F '^15|Buphagi' -t IOC151
- $0 -F '^15|Ardeidae|Pelecani' -t IOC151
- $0 -F '^15|Cist|Arde|Cico' -t IOC151
- $0 -F '^15|Coraci|PIcif|Coracif|passerif|Fringi|Muscic|Alce' -t IOC151
- $0 -F '^15|Coraci|Estril|Picif|Coracif|passerif|Fringi|Muscic|Alce' -t IOC151
- $0 -F '^15|Plocei' -t IOC151
- $0 -F '^15|Passer' -t IOC151
- $0 -F '^15|Coli' -t IOC151
- $0 -F '^15|Coraci|Alce|Passe' -t IOC151
- $0 -F '^15|Coraci|Pici' -t IOC151
- $0 -F '^15|Pici' -t IOC151
+ $0 -F '^Tan' -t IOC151 -n
+ $0 -F '^Tan' -t IOC151
+ $0 -F '^Vidu.+dae\$|Plo.+dae$|Estri.+dae\$' -t IOC151
+ $0 -F '^Estri.+dae\$' -t IOC151
+ $0 -F '^Buphagi' -t IOC151
+ $0 -F '^Ardeidae|Pelecani' -t IOC151
+ $0 -F '^Cist|Arde|Cico' -t IOC151
+ $0 -F 'Coraci|PIcif|Coracif|passerif|Fringi|Muscic|Alce' -t IOC151
+ $0 -F 'Coraci|Estril|Picif|Coracif|passerif|Fringi|Muscic|Alce' -t IOC151
+ $0 -F 'Plocei' -t IOC151
+ $0 -F '^Passer' -t IOC151
+ $0 -F '^Coli' -t IOC151
+ $0 -F '^Coraci|Alce|Passe' -t IOC151
+ $0 -F '^Coraci|Pici' -t IOC151
+ $0 -F '^Pici' -t IOC151
  $0 -f '^Tanz' -t IOC151
  $0 -f '^20[012]' -t IOC151
 
