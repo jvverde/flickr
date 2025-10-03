@@ -1,241 +1,233 @@
 #!/usr/bin/perl
-
 # =============================================================================
 # Script: sort-photos-in-sets.pl
 #
 # Description:
-#   This Perl script reorders photos within Flickr photosets for the authenticated
-#   user based on specified sorting criteria. It uses the Flickr API to fetch
-#   photosets, retrieve photo metadata, sort the photos, and reorder them in the
-#   sets. The script supports filtering photosets by title using a regex pattern,
-#   various sorting keys (e.g., by date taken, views, upload date), and even
-#   custom sorting via machine tags. A dry-run mode allows simulation without
-#   making changes.
-#
-#   IMPORTANT: This script requires a pre-configured Flickr API token stored in
-#   '$ENV{HOME}/saved-flickr.st'. You can generate this file using the Flickr::API
-#   module's authentication tools (e.g., via a separate authentication script).
+#   Reorders Flickr photosets by flexible sorting metrics: views, faves, comments,
+#   combined ratios, or any user Perl expression on those fields.
 #
 # Usage:
 #   perl sort-photos-in-sets.pl [OPTIONS]
 #
 # Options:
-#   -h, --help          Display this help message and exit.
-#   -f, --filter=PATTERN
-#                       Filter photosets by title using a regex pattern (case-insensitive).
-#                       Default: '.*' (matches all photosets).
-#   -s, --sort=KEY      Sorting criteria for photos within each set.
-#                       Valid keys: 'views' (by view count, numeric),
-#                                   'dateupload' (by upload date, numeric Unix timestamp),
-#                                   'lastupdate' (by last update date, numeric Unix timestamp),
-#                                   'datetaken' (by date taken, string comparison in YYYY-MM-DD HH:MM:SS format).
-#                       Custom machine tag sorting: Use format 'namespace:predicate' to sort by
-#                       a sequence number extracted from photo machine tags (e.g., 'album:order:seq').
-#                       Falls back to 'datetaken' if sequences are equal or missing.
-#                       Default: 'datetaken'.
-#   -r, --reverse       Reverse the sorting order (e.g., descending instead of ascending).
-#   -n, --dry-run      Simulate the sorting process: Print what would be done without
-#                       making API calls to reorder photos.
+#   -h, --help               Show this help.
+#   -f, --filter=PATTERN     Only process sets whose title matches PATTERN (regex, case-insensitive).
+#   -s, --sort=KEY           Sort by: views, datetaken, dateupload, faves, comments, faves+comments,
+#                            faves/comments, views/comments, comments/faves, comments/views,
+#                            faves/views, (faves+comments)/views, ...
+#   --sort-expr=EXPR         Perl expression on $views, $faves, $comments, $datetaken, $dateupload.
+#       Examples:
+#         --sort-expr '($faves + $comments)/($views || 1)'
+#         --sort-expr 'substr($datetaken,0,4)'  # sort by year taken (datetaken format "YYYY-MM-DD HH:MM:SS")
+#         --sort-expr '$dateupload'             # sort by upload timestamp (Unix time)
+#   -r, --reverse            Reverse sorting direction.
+#   -n, --dry-run            Print what would be done, no Flickr changes.
+#   --debug                  Print extra debug info, including API response dumps.
 #
-# Examples:
-#   1. Sort all photosets by date taken (default behavior):
-#      perl sort-photos-in-sets.pl
+# Requirements:
+#   - API token saved in $HOME/saved-flickr.st
+#   - Perl modules: Flickr::API, Data::Dumper
 #
-#   2. Sort photosets with titles containing 'vacation' by views, in descending order:
-#      perl sort-photos-in-sets.pl -f vacation -s views -r
-#
-#   3. Dry-run sort of all photosets by upload date:
-#      perl sort-photos-in-sets.pl -s dateupload -n
-#
-#   4. Custom sorting using machine tags (e.g., tag like 'album:order=5'):
-#      perl sort-photos-in-sets.pl -s 'album:order:seq' -f 'My Album'
-#
-#   5. Reverse sort by last update, filtering to photosets starting with '2023':
-#      perl sort-photos-in-sets.pl -f '^2023' -s lastupdate -r
-#
-# Notes:
-#   - The script fetches data in pages (up to 500 items per page) to handle large collections.
-#   - Machine tags for custom sorting should be in the format 'namespace:predicate=value',
-#     where value is a numeric sequence. Missing tags default to a high number (100000).
-#   - Errors during API calls are logged to STDERR, and the script continues to the next set.
-#   - Requires Perl modules: Getopt::Long, Data::Dumper, Flickr::API.
-#
-# Author: [Your Name or Anonymous]
-# Version: 1.0
-# Date: September 29, 2025
 # =============================================================================
 
 use strict;
 use warnings;
 use Getopt::Long;
-use Data::Dumper;
 use Flickr::API;
+use Data::Dumper;
 
-# Set output record and field separators for cleaner printing (newline for both)
 ($\, $,) = ("\n", "\n");
 
-# Declare variables for command-line options with defaults
-my $help;                   # Flag to display help
-my $filter_pattern = '.*';  # Regex pattern to filter photoset titles (default: match all)
-my $dry_run;                # Flag for dry-run mode (simulate without changes)
-my $sort = 'datetaken';     # Sorting key (default: datetaken)
-my $rev;                    # Flag to reverse sort order
+my ($help, $filter_pattern, $dry_run, $sort, $sort_expr, $rev, $debug);
+$filter_pattern = '.*';
+$sort = 'datetaken';
 
-# Parse command-line options using Getopt::Long
 GetOptions(
-    'h|help' => \$help,             # Help flag
-    'f|filter=s' => \$filter_pattern, # Filter pattern for photoset titles
-    'n|dry-run' => \$dry_run,        # Dry-run mode
-    's|sort=s' => \$sort,            # Sorting key
-    'r|reverse' => \$rev,            # Reverse order flag
+    'h|help'        => \$help,
+    'f|filter=s'    => \$filter_pattern,
+    'n|dry-run'     => \$dry_run,
+    's|sort=s'      => \$sort,
+    'expr|sort-expr=s' => \$sort_expr,
+    'r|reverse'     => \$rev,
+    'debug'         => \$debug,
 );
 
-# Validate the sorting key against allowed values
-die "Error: Sort parameter ('$sort') must be one of 'views', 'dateupload', 'lastupdate', 'datetaken', or a machine tag pattern like 'namespace:predicate:seq'\n"
-  unless $sort =~ /^(views|dateupload|lastupdate|datetaken|.+:seq)$/;
-
-# If help flag is set, print detailed usage and exit
 if ($help) {
     print <<'HELP';
-This script reorders photos in Flickr photosets for the authenticated user based on specified criteria.
-It fetches photosets, filters them by title regex, sorts photos within each set, and reorders via the API.
-
 Usage: perl sort-photos-in-sets.pl [OPTIONS]
 
 Options:
-  -h, --help          Show this help message and exit.
-  -f, --filter=PATTERN
-                      Filter photosets by title using a case-insensitive regex pattern.
-                      Default: '.*' (all photosets). Example: -f vacation (matches titles containing 'vacation').
-  -s, --sort=KEY      Sort photos by:
-                      - 'views': By view count (numeric, ascending).
-                      - 'dateupload': By upload date (Unix timestamp, ascending).
-                      - 'lastupdate': By last update date (Unix timestamp, ascending).
-                      - 'datetaken': By date taken (string, YYYY-MM-DD HH:MM:SS, ascending).
-                      Custom: 'namespace:predicate:seq' to sort by sequence from machine tags.
-                      Default: 'datetaken'.
-  -r, --reverse       Reverse the sort order (e.g., descending for numeric keys).
-  -n, --dry-run      Simulate: Print photosets that would be sorted without reordering.
+  -h, --help               Show this help.
+  -f, --filter=PATTERN     Only sets whose title matches PATTERN.
+  -s, --sort=KEY           Sort by keys such as:
+                           views, datetaken (default), dateupload, faves, comments,
+                           faves+comments, faves/comments, views/comments,
+                           comments/faves, comments/views, faves/views,
+                           (faves+comments)/views, ...
+  --sort-expr=EXPR         Perl expression on:
+       $views, $faves, $comments, $datetaken, $dateupload
+     - $datetaken is string format "YYYY-MM-DD HH:MM:SS"
+     - $dateupload is Unix timestamp (seconds since epoch)
+     Example expressions:
+       --sort-expr '($faves + $comments) / ($views || 1)'
+       --sort-expr 'substr($datetaken,0,4)'   # sort by year taken
+       --sort-expr '$dateupload'              # sort by upload time
 
-Examples:
-  Sort all sets by date taken: perl sort-photos-in-sets.pl
-  Sort '2023' sets by views descending: perl sort-photos-in-sets.pl -f '^2023' -s views -r
-  Dry-run custom sort: perl sort-photos-in-sets.pl -s 'album:order:seq' -n
+  -r, --reverse            Reverse the sort order.
+  -n, --dry-run            Show what would be done; do not update Flickr.
+  --debug                  Print full API responses and debug info.
 
-NOTE: Requires Flickr API tokens in '$ENV{HOME}/saved-flickr.st'.
 HELP
     exit;
 }
 
-# Load Flickr API configuration from the stored token file
 my $config_file = "$ENV{HOME}/saved-flickr.st";
 my $flickr = Flickr::API->import_storable_config($config_file);
+my $re_filter = qr/$filter_pattern/i;
 
-# Compile the filter pattern into a case-insensitive regex
-my $re = qr/$filter_pattern/i;
-
-# Initialize array to hold filtered photosets
-my $photosets = [];
-
-# Fetch photosets in paginated manner
-my $page = 1;
-my $pages = 1;
-while ($page <= $pages) {
-    # Call Flickr API to get list of photosets for the current page
-    my $response = $flickr->execute_method('flickr.photosets.getList', {
-        per_page => 500,  # Maximum per page to minimize API calls
-        page => $page,
-    });
-
-    # If API call fails, warn and retry the current page
-    warn "Error fetching photosets page $page: $response->{error_message}" and redo unless $response->{success};
-
-    # Filter photosets by title regex and append to the list
-    push @$photosets, grep { $_->{title} =~ $re } @{$response->as_hash->{photosets}->{photoset}};
-
-    # Update pagination info
-    $pages = $response->as_hash->{photosets}->{pages};
-    $page = $response->as_hash->{photosets}->{page} + 1;
+# Decide if favorites/comments data is needed based on --sort or --sort-expr
+my $need_faves_comments = 0;
+if ($sort_expr) {
+    $need_faves_comments = 1;
+} elsif ($sort =~ /faves|comments/) {
+    $need_faves_comments = 1;
 }
 
-# In dry-run mode, print what would be sorted and exit
+# Fetch all photosets matching filter
+my $photosets = [];
+my ($page, $pages) = (1, 1);
+while ($page <= $pages) {
+    my $resp = $flickr->execute_method('flickr.photosets.getList', { per_page => 500, page => $page });
+    warn "Error fetching photosets page $page: $resp->{error_message}" and sleep 1 and redo unless $resp->{success};
+    push @$photosets, grep { $_->{title} =~ $re_filter } @{$resp->as_hash->{photosets}->{photoset}};
+    $pages = $resp->as_hash->{photosets}->{pages};
+    $page = $resp->as_hash->{photosets}->{page} + 1;
+}
+
 if ($dry_run) {
-    print map { "Photoset $_->{title} will be sorted by $sort" . ($rev ? " (reversed)" : "") . "\n" } @$photosets;
+    print map { "Photoset $_->{title} would be sorted by ".($sort_expr ? "expr '$sort_expr'" : $sort).($rev ? " (reversed)" : "") } @$photosets;
     exit;
 }
 
-# Process each filtered photoset: fetch photos, sort, and reorder
 foreach my $photoset (@$photosets) {
-    # Initialize array to hold photos in the set
+    # Fetch all photos for this photoset
     my $photos = [];
-
-    # Fetch photos in paginated manner
-    my $page = 1;
-    my $pages = 1;
+    ($page, $pages) = (1, 1);
     while ($page <= $pages) {
-        # Call Flickr API to get photos in the set with extra metadata
-        my $response = $flickr->execute_method('flickr.photosets.getPhotos', {
+        my $resp = $flickr->execute_method('flickr.photosets.getPhotos', {
             photoset_id => $photoset->{id},
-            per_page => 500,  # Maximum per page
-            page => $page,
-            extras => 'views,date_upload,date_taken,last_update,machine_tags',  # Metadata needed for sorting
+            extras      => 'views,date_upload,date_taken,last_update,machine_tags',
+            per_page    => 500,
+            page        => $page,
         });
-
-        # If API call fails, warn and retry the current page
-        warn "Error fetching photos from $photoset->{title} (page $page): $response->{error_message}" and redo unless $response->{success};
-
-        # Ensure the photo list is an array reference
-        my $bunch = $response->as_hash->{photoset}->{photo};
-        $bunch = [ $bunch ] unless 'ARRAY' eq ref $bunch;
-
-        # Append photos to the list
-        push @$photos, @$bunch;
-
-        # Update pagination info
-        $pages = $response->as_hash->{photoset}->{pages};
-        $page = $response->as_hash->{photoset}->{page} + 1;
+        warn "Error fetching photos in '$photoset->{title}' page $page: $resp->{error_message}" and sleep 1 and redo unless $resp->{success};
+        my $plist = $resp->as_hash->{photoset}->{photo};
+        $plist = [ $plist ] unless ref($plist) eq 'ARRAY';
+        push @$photos, @$plist;
+        $pages = $resp->as_hash->{photoset}->{pages};
+        $page = $resp->as_hash->{photoset}->{page} + 1;
     }
 
-    # Sort the photos based on the chosen key
-    my @sorted_photos;
-    if ($sort =~ /.+:seq/) {
-        # Custom sorting via machine tags: extract sequence numbers
-        my $tag_pattern = $sort;
-        $tag_pattern =~ s/[^a-z0-9:]//ig;  # Sanitize to canonical form
+    foreach my $photo (@$photos) {
+        # Views from extras, default 0
+        $photo->{views} = $photo->{views} // 0;
 
-        foreach my $photo (@$photos) {
-            # Extract sequence from machine_tags like 'namespace:predicate=123'
-            my ($seq) = $photo->{machine_tags} =~ /$tag_pattern=(\d+)/i;
-            $photo->{seq} = defined $seq ? $seq : 100000;  # Default high value if missing
+        # Unix timestamp for upload
+        $photo->{dateupload} = $photo->{dateupload} // 0;
+
+        if ($need_faves_comments) {
+            # Fetch favorites with minimal data for total count
+            my $fav_resp = $flickr->execute_method('flickr.photos.getFavorites', {
+                photo_id => $photo->{id},
+                per_page => 1,
+            });
+            if ($fav_resp->{success}) {
+                $photo->{faves} = $fav_resp->as_hash->{photo}->{total} // 0;
+                print Dumper($fav_resp->as_hash) if $debug;
+            } else {
+                warn "Failed to get favorites for photo $photo->{id}";
+                $photo->{faves} = 0;
+            }
+
+            # Fetch comments list
+            my $comm_resp = $flickr->execute_method('flickr.photos.comments.getList', {
+                photo_id => $photo->{id},
+            });
+            if ($comm_resp->{success}) {
+                my $comments = $comm_resp->as_hash->{comments}->{comment};
+                $photo->{comments} = ref($comments) eq 'ARRAY' ? scalar(@$comments) : ($comments ? 1 : 0);
+                print Dumper($comm_resp->as_hash) if $debug;
+            } else {
+                warn "Failed to get comments for photo $photo->{id}";
+                $photo->{comments} = 0;
+            }
+        } else {
+            # Defaults if no faves/comments needed
+            $photo->{faves} = 0;
+            $photo->{comments} = 0;
         }
 
-        # Sort by sequence (numeric), fallback to datetaken (string) if ties
-        @sorted_photos = sort {
-            $a->{seq} <=> $b->{seq} || $b->{datetaken} cmp $a->{datetaken}
-        } @$photos;
-    } elsif ($sort eq 'datetaken') {
-        # String comparison for datetaken (lexical order works for YYYY-MM-DD format)
-        @sorted_photos = sort { $a->{$sort} cmp $b->{$sort} } @$photos;
-    } else {
-        # Numeric comparison for views, dateupload, lastupdate
-        @sorted_photos = sort { $a->{$sort} <=> $b->{$sort} } @$photos;
+        # Prevent division by zero denominators
+        my $faves_den = $photo->{faves} == 0 ? 1 : $photo->{faves};
+        my $views_den = $photo->{views} == 0 ? 1 : $photo->{views};
+
+        # Derived metrics
+        $photo->{'faves+comments'}            = $photo->{faves} + $photo->{comments};
+        $photo->{'faves/comments'}            = $photo->{comments} > 0 ? $photo->{faves} / $photo->{comments} : 0;
+        $photo->{'views/comments'}            = $photo->{comments} > 0 ? $photo->{views} / $photo->{comments} : 0;
+        $photo->{'views/(faves+comments)'}    = $photo->{'faves+comments'} > 0 ? $photo->{views} / $photo->{'faves+comments'} : 0;
+
+        # Your selected ratios with safe math
+        $photo->{'comments/faves'}            = $photo->{comments} / $faves_den;
+        $photo->{'comments/views'}            = $photo->{comments} / $views_den;
+        $photo->{'faves/views'}               = $photo->{faves} / $views_den;
+        $photo->{'(faves+comments)/views'}    = ($photo->{faves} + $photo->{comments}) / $views_den;
+
+        if ($debug) {
+            print "DEBUG Photo: $photo->{title} (ID=$photo->{id})";
+            print " Views=$photo->{views} Faves=$photo->{faves} Comments=$photo->{comments}";
+            print " comments/faves=$photo->{'comments/faves'}";
+            print " comments/views=$photo->{'comments/views'}";
+            print " faves/views=$photo->{'faves/views'}";
+            print " (faves+comments)/views=$photo->{'(faves+comments)/views'}";
+        }
     }
 
-    # Apply reverse if flag is set
-    @sorted_photos = reverse @sorted_photos if $rev;
+    # Sorting
+    my @sorted;
+    if ($sort_expr) {
+        @sorted = sort {
+            my ($views,$faves,$comments,$datetaken,$dateupload) = ($a->{views}, $a->{faves}, $a->{comments}, $a->{datetaken}, $a->{dateupload});
+            my $val_a = eval $sort_expr; $val_a = 0 if $@;
+            ($views,$faves,$comments,$datetaken,$dateupload) = ($b->{views}, $b->{faves}, $b->{comments}, $b->{datetaken}, $b->{dateupload});
+            my $val_b = eval $sort_expr; $val_b = 0 if $@;
+            ($val_a || 0) <=> ($val_b || 0);
+        } @$photos;
+    }
+    elsif ($sort =~ /.+:seq/) {
+        my $tag_pattern = $sort; $tag_pattern =~ s/[^a-z0-9:]//ig;
+        foreach my $p (@$photos) {
+            my ($seq) = $p->{machine_tags} =~ /$tag_pattern=(\d+)/i;
+            $p->{seq} = defined $seq ? $seq : 100000;
+        }
+        @sorted = sort { $a->{seq} <=> $b->{seq} || $b->{datetaken} cmp $a->{datetaken} } @$photos;
+    }
+    elsif ($sort eq 'datetaken') {
+        @sorted = sort { $a->{datetaken} cmp $b->{datetaken} } @$photos;
+    }
+    else {
+        # Numeric fallback covers dateupload and numeric keys
+        @sorted = sort { $a->{$sort} <=> $b->{$sort} } @$photos;
+    }
 
-    # Create comma-separated list of sorted photo IDs
-    my $sorted_ids = join(',', map { $_->{id} } @sorted_photos);
+    @sorted = reverse @sorted if $rev;
 
-    # Call API to reorder photos in the set
-    my $response = $flickr->execute_method('flickr.photosets.reorderPhotos', {
+    # Reorder photoset
+    my $sorted_ids = join(',', map { $_->{id} } @sorted);
+    my $resp = $flickr->execute_method('flickr.photosets.reorderPhotos', {
         photoset_id => $photoset->{id},
-        photo_ids => $sorted_ids,
+        photo_ids   => $sorted_ids,
     });
-
-    # If reorder fails, warn and skip to next set
-    warn "Error reordering photos in $photoset->{title} ($photoset->{id}): $response->{error_message}" and next unless $response->{success};
-
-    # Print success message
-    print "Photoset $photoset->{title} sorted by $sort" . ($rev ? " (reversed)" : "") . ".\n";
+    warn "Failed reordering photoset '$photoset->{title}': $resp->{error_message}" and next unless $resp->{success};
+    print "Photoset '$photoset->{title}' sorted by ".($sort_expr ? "expr '$sort_expr'" : $sort).($rev ? " (reversed)" : "").".";
 }
