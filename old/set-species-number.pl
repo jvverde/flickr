@@ -7,6 +7,7 @@ use Data::Dumper;
 use JSON;
 binmode(STDOUT, ':utf8');
 
+
 $\ = "\n";
 $, = " ";
 my $json = JSON->new->utf8;
@@ -19,7 +20,6 @@ sub usage {
     print "Set species number\nUsage:\n";
     print "  $0 [-m minimal] --file countingFile\n";
     print "  $0 [-m minimal] -f countingFile\n";
-    print "  $0 -n|--dry-run  (simulate without adding tags)\n";
     exit;
 }
 
@@ -33,13 +33,11 @@ sub readfile {
 
 my ($file_name);
 my ($min, $max) = (0, 20000);
-my $dry_run = 0;
 
 GetOptions(
   "f|file=s" => \$file_name,
   "min=i" => \$min,
   "max=i" => \$max,
-  "n|dry-run" => \$dry_run,
   "h|help" => \&usage
 );
 
@@ -50,26 +48,18 @@ my $json_text = readfile($file_name);
 # parse the json text to perl data structure
 my $counting = $json->decode($json_text);
 
-foreach my $elem (@$counting) {
-  my $n = $elem->{cnt};
-  next unless $n > $min && $n < $max;
-  my $photos = $elem->{photos};
-  my @ids = keys %$photos;
-  next unless @ids;
-  my $species = $photos->{$ids[0]}->{binomial};
+foreach my $species (grep { $counting->{$_}->{n} > $min && $counting->{$_}->{n} < $max } keys %$counting) {
+  my $elem = $counting->{$species};
+  my $n = $elem->{n};
   my $tag = qq|species:number="$n"|;
-  foreach my $id (@ids) {
-    if ($dry_run) {
-      print "Dry run: Would add machine:tag $tag to photo $id for '$species'";
-      next;
-    }
+  foreach my $id (@{$elem->{ids}}) {
     my $response = eval {
       $flickr->execute_method('flickr.photos.addTags', {
         photo_id => $id,
         tags => $tag
       })
-    } or warn "$@" and sleep 1 and redo;
-    warn "Error while try to set new machine:tag ($tag) to '$species': $response->{error_message}\n\n" and sleep 1 and redo unless $response->{success};
+    } or warn "$@" and redo;
+    warn "Error while try to set new machine:tag ($tag) to '$species': $response->{error_message}\n\n" and redo unless $response->{success};
     print "Done new machine:tag $tag on '$species'";
   }
 }
