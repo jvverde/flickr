@@ -5,6 +5,7 @@ use Getopt::Long;
 use Flickr::API;
 use JSON;
 use POSIX qw(strftime);
+use Time::Local 'timegm';
 binmode(STDOUT, ':utf8');
 
 # Set output record and field separators
@@ -24,21 +25,22 @@ sub usage {
 Set sequence numbers for Flickr photo groups based on machine tags.
 
 Usage:
-  $0 --tag <tag> --out <updatefile>
-  $0 -t <tag> -o <updatefile>
+  $0 --tag <tag> [--out <updatefile>] [--max-date <date>]
+  $0 -t <tag> [-o <updatefile>] [-m <date>]
   $0 --help
 
 Options:
-  -t, --tag   The base tag to search for (e.g., IOC151) (required)
-  -o, --out   Output JSON file to store updated data (required)
-  -h, --help  Display this help message and exit
+  -t, --tag      The base tag to search for (e.g., IOC151) (required)
+  -o, --out      Output JSON file to store updated data (optional; if not provided, output to stdout)
+  -m, --max-date Maximum upload date in YYYY-MM-DD format to include photos uploaded before or on this date (optional)
+  -h, --help     Display this help message and exit
 
 The script searches for photos tagged with the provided tag (e.g., IOC151),
 groups them by machine tags like IOC151:seq=NUMBER (case-insensitive),
 extracts binomial names from machine tags like IOC151:binomial=NAME (case-insensitive),
-initializes groups from the output file if it exists,
+initializes groups from the output file if it exists and --out is provided,
 updates with new photos or new sequence numbers found,
-and saves the updated data to the output JSON file only if changes are detected.
+and saves the updated data to the output JSON file only if changes are detected (or outputs to stdout if --out not provided).
 The data is a hash indexed by seq number,
 with values being hashes of photo_id => {date_upload, date_uploaded, photo_title, photo_page_url, binomial}.
 END_USAGE
@@ -64,21 +66,37 @@ sub writefile {
 }
 
 # Declare variables for command-line options
-my ($tag, $out);
+my ($tag, $out, $max_date);
 
 # Parse command-line options
 GetOptions(
-    "t|tag=s" => \$tag,  # Base tag
-    "o|out=s" => \$out,  # Output JSON file
-    "h|help"  => \&usage # Show help
+    "t|tag=s"      => \$tag,       # Base tag
+    "o|out=s"      => \$out,       # Output JSON file
+    "m|max-date=s" => \$max_date,  # Max upload date
+    "h|help"       => \&usage      # Show help
 ) or usage();
 
 # Validate required command-line arguments
-usage() unless defined $tag && defined $out;
+usage() unless defined $tag;
 
-# Load existing groups from file if it exists
+# Validate and convert max_date if provided
+if (defined $max_date) {
+    unless ($max_date =~ m/^(\d{4})-(\d{2})-(\d{2})$/) {
+        die "Invalid date format for --max-date. Must be YYYY-MM-DD.";
+    }
+    my ($y, $m, $d) = ($1, $2, $3);
+    # Convert to Unix timestamp at end of the day (23:59:59 UTC)
+    eval {
+        $max_date = timegm(59, 59, 23, $d, $m - 1, $y);
+    };
+    if ($@) {
+        die "Invalid date values for --max-date: $@";
+    }
+}
+
+# Load existing groups from file if --out is provided and file exists
 my %groups;
-if (-f $out && -s $out) {
+if (defined $out && -f $out && -s $out) {
     my $loaded = $json->decode(readfile($out));
     %groups = %$loaded if ref $loaded eq 'HASH';
 }
@@ -88,17 +106,21 @@ my $page = 1;
 my @all_photos;
 my $pages = 1;  # Initialize to enter loop
 do {
+    my $search_args = {
+        user_id  => 'me',               # Search photos from authenticated user
+        tags     => $tag,               # Base tag to search
+        per_page => 500,                # Max photos per page
+        extras   => 'date_upload,owner,title,machine_tags',  # Include necessary extras
+        page     => $page               # Current page
+    };
+    $search_args->{max_upload_date} = $max_date if defined $max_date;
+
     my $response = eval {
-        $flickr->execute_method('flickr.photos.search', {
-            user_id  => 'me',               # Search photos from authenticated user
-            tags     => $tag,               # Base tag to search
-            per_page => 500,                # Max photos per page
-            extras   => 'date_upload,owner,title,machine_tags',  # Include necessary extras
-            page     => $page               # Current page
-        })
+        $flickr->execute_method('flickr.photos.search', $search_args)
     };
     if ($@ || !$response->{success}) {
         warn "Error retrieving photos for page $page: $@ or $response->{error_message}";
+        sleep 1;
         redo;  # Retry the current page on failure
     }
 
@@ -150,13 +172,14 @@ foreach my $photo (@all_photos) {
 
     next if exists $groups{$number}{$id} and $groups{$number}{$id}{date_upload} == $date_upload;
 
-    if (!exists $groups{$number}{$id}) {
-        print "New photo found for seq $number: $id";
-    } else {
-        print "Date updated for photo $id in seq $number: old=$groups{$number}{$id}{date_upload}, new=$date_upload";
-    }
     my $date_uploaded = strftime("%Y-%m-%d %H:%M:%S", localtime($date_upload));
     my $photo_title = $photo->{title} // '';
+
+    if (!exists $groups{$number}{$id}) {
+        print "New photo found for seq $number: $photo_title";
+    } else {
+        print "Date updated for photo $photo_title in seq $number: old=$groups{$number}{$id}{date_upload}, new=$date_upload";
+    }
     $groups{$number}{$id} = {
         date_upload    => $date_upload,
         date_uploaded  => $date_uploaded,
@@ -174,10 +197,17 @@ foreach my $photo (@all_photos) {
 #     print ++$cnt, "- For seq $num got $photo_count photos";
 # }
 
-# Write updated data to output file if changes detected
-if ($new_photos || $new_seqs) {
-    print "Changes detected. Updating JSON file at $out";
-    writefile($out, $json->pretty->encode(\%groups));
+# Prepare JSON output
+my $json_output = $json->pretty->encode(\%groups);
+
+# Write updated data to output file if --out provided and changes detected, or output to stdout if --out not provided
+if (defined $out) {
+    if ($new_photos || $new_seqs) {
+        print "Changes detected. Updating JSON file at $out";
+        writefile($out, $json_output);
+    } else {
+        print "No new photos or sequence numbers found. No update needed.";
+    }
 } else {
-    print "No new photos or sequence numbers found. No update needed.";
+    print $json_output;
 }
