@@ -387,7 +387,7 @@ my %changes = (
 
 # Search for photos page by page, processing each page immediately
 my $page = $start_page || 1;
-my $pages = 1;
+my $pages = $page;  # Start with current page to ensure at least one iteration
 my $photos_retrieved = 0;
 
 while ($page <= $pages) {
@@ -416,7 +416,6 @@ while ($page <= $pages) {
     print "Processing page $page of $pages ($photos_in_page photos)";
     
     # Process each photo in this page
-    # Process each photo in this page
     foreach my $photo (@$photos) {
         my $id = $photo->{id};
         my $page_url = "https://www.flickr.com/photos/$photo->{owner}/$id/";
@@ -440,8 +439,8 @@ while ($page <= $pages) {
             photo_page_url  => $page_url
         };
         
-        # Only get geo location if the photo has geo data (check for latitude/longitude in search results)
-        if (exists $photo->{latitude} || exists $photo->{longitude}) {
+        # Only get geo location if the photo has geo data (check for geo permission flags)
+        if (exists $photo->{geo_is_public} || exists $photo->{geo_is_contact} || exists $photo->{geo_is_family} || exists $photo->{geo_is_friend}) {
             $flickr_data->{geo} = get_photo_geo($id);
         } else {
             debug_print("Photo $id has no geo data, skipping geo API call");
