@@ -191,17 +191,17 @@ sub get_photo_geo {
     $geo_data->{longitude} = $location->{longitude} if exists $location->{longitude};
     $geo_data->{accuracy} = $location->{accuracy} if exists $location->{accuracy};
     
-    # Get location description if available
+    # Get location description if available - these are already strings
     if (exists $location->{locality} || exists $location->{county} || 
         exists $location->{region} || exists $location->{country}) {
         $geo_data->{location} = {};
-        $geo_data->{location}{locality} = $location->{locality}{_content} 
+        $geo_data->{location}{locality} = $location->{locality} 
             if exists $location->{locality};
-        $geo_data->{location}{county} = $location->{county}{_content} 
+        $geo_data->{location}{county} = $location->{county} 
             if exists $location->{county};
-        $geo_data->{location}{region} = $location->{region}{_content} 
+        $geo_data->{location}{region} = $location->{region} 
             if exists $location->{region};
-        $geo_data->{location}{country} = $location->{country}{_content} 
+        $geo_data->{location}{country} = $location->{country} 
             if exists $location->{country};
     }
     
@@ -390,7 +390,7 @@ my $page = $start_page || 1;
 my $pages = 1;
 my $photos_retrieved = 0;
 
-do {
+while ($page <= $pages) {
     # Optimize per_page for the last page when max_photos is specified
     if (defined $max_photos && ($max_photos - $photos_retrieved) < 500) {
         $search_args->{per_page} = $max_photos - $photos_retrieved;
@@ -416,6 +416,7 @@ do {
     print "Processing page $page of $pages ($photos_in_page photos)";
     
     # Process each photo in this page
+    # Process each photo in this page
     foreach my $photo (@$photos) {
         my $id = $photo->{id};
         my $page_url = "https://www.flickr.com/photos/$photo->{owner}/$id/";
@@ -435,9 +436,16 @@ do {
             description     => $description,
             tags            => \@tags_array,
             sets            => get_photo_sets($id) || {},
-            geo             => get_photo_geo($id),
+            geo             => undef,  # Initialize as undef
             photo_page_url  => $page_url
         };
+        
+        # Only get geo location if the photo has geo data (check for latitude/longitude in search results)
+        if (exists $photo->{latitude} || exists $photo->{longitude}) {
+            $flickr_data->{geo} = get_photo_geo($id);
+        } else {
+            debug_print("Photo $id has no geo data, skipping geo API call");
+        }
         
         # Merge with existing data
         if (merge_photo_data($id, $flickr_data, \%photos, \%changes)) {
@@ -462,7 +470,7 @@ do {
     last if (defined $max_photos && $photos_retrieved >= $max_photos);
     
     $page++;
-} while ($page <= $pages);
+}
 
 # Skip if no photos found
 if ($changes{total_processed} == 0) {
