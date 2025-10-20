@@ -356,7 +356,7 @@ while ($page <= $pages) {
                         warn "Failed to update photo $id: $@";
                     } else {
                         $changes{updated}++;
-                        print "Updated description for photo $tiltle ($id)";
+                        print "Updated description for photo $title ($id)";
                     }
                 } else {
                     $changes{updated}++;
