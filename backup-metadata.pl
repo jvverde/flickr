@@ -129,7 +129,7 @@ sub flickr_api_call {
             }
             
             sleep $retry_delay;
-            $retry_delay *= 2;  # Exponential backoff
+            $retry_delay *= 3;  # Exponential backoff
             next;
         }
         
