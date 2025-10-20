@@ -65,27 +65,6 @@ sub debug_print {
     }
 }
 
-# Convert date string to timestamp (end of day for before, start of day for after)
-sub date_to_timestamp {
-    my ($date_string, $end_of_day) = @_;
-    unless ($date_string =~ m/^(\d{4})-(\d{2})-(\d{2})$/) {
-        die "Invalid date format: $date_string. Must be YYYY-MM-DD.";
-    }
-    my ($y, $m, $d) = ($1, $2, $3);
-    eval {
-        if ($end_of_day) {
-            # End of day (23:59:59 UTC)
-            return timegm(59, 59, 23, $d, $m - 1, $y);
-        } else {
-            # Start of day (00:00:00 UTC)
-            return timegm(0, 0, 0, $d, $m - 1, $y);
-        }
-    };
-    if ($@) {
-        die "Invalid date values for $date_string: $@";
-    }
-}
-
 # Robust Flickr API call with exponential backoff
 sub flickr_api_call {
     my ($method, $args) = @_;
@@ -108,7 +87,7 @@ sub flickr_api_call {
             }
             
             sleep $retry_delay;
-            $retry_delay *= 3;  # Exponential backoff
+            $retry_delay *= 8;  # Exponential backoff
             next;
         }
         
@@ -151,8 +130,8 @@ my @tags;
 
 # Parse command-line options with optional debug level
 GetOptions(
-    "a|after=s"        => \$after_date,
-    "b|before=s"       => \$before_date,
+    "a|after=s"        => sub { die "Error: Date '$_[1]' must be in YYYY-MM-DD format\n" if $_[1] && $_[1] !~ /^\d{4}-\d{2}-\d{2}$/; $after_date = $_[1] },
+    "b|before=s"       => sub { die "Error: Date '$_[1]' must be in YYYY-MM-DD format\n" if $_[1] && $_[1] !~ /^\d{4}-\d{2}-\d{2}$/; $before_date = $_[1] },
     "d|days=i"         => \$days,
     "m|max-photos=i"   => \$max_photos,
     "t|tag=s"          => \@tags,
@@ -164,6 +143,10 @@ GetOptions(
     "debug:i"          => \$debug,  # Optional integer argument
     "h|help"           => \&usage
 ) or usage();
+
+if (defined $after_date && defined $before_date && $after_date gt $before_date) {
+    die "Error: After date ($after_date) cannot be after before date ($before_date)\n";
+}
 
 # Set default debug level if --debug is used without argument
 if (defined $debug && $debug == 0) {
@@ -213,9 +196,9 @@ my $search_args = {
 # Add date filters as timestamps
 $search_args->{min_upload_date} = time() - ($days * 86400) if defined $days;
 
-$search_args->{min_upload_date} = date_to_timestamp($after_date, 0) if defined $after_date;
+$search_args->{min_upload_date} = $after_date if defined $after_date;
 
-$search_args->{max_upload_date} = date_to_timestamp($before_date, 1) if defined $before_date;
+$search_args->{max_upload_date} = $before_date if defined $before_date;
 
 # Add tag filters if specified
 if (@tags) {
@@ -293,7 +276,7 @@ while ($page <= $pages) {
             if ($set_title =~ $family_re) {
                 $family_set ||= {id => $set_id, title => $set_title};
             }
-            if ($set_title =~ /\b[A-Z][a-z]+ [a-z]+\b/) {
+            if ($set_title =~ /^[A-Z][a-z]+ [a-z]+$/) {
                 $species_set ||= {id => $set_id, title => $set_title};
             }
             if ($set_title =~ m#\d{4}/\d{2}/\d{2}#) {
