@@ -396,6 +396,8 @@ while ($page <= $pages) {
     $photos = [$photos] unless ref $photos eq 'ARRAY';
     
     my $photos_in_page = scalar(@$photos);
+    $pages = $hash->{photos}->{pages} || 1;
+
     print "Processing page $page of $pages ($photos_in_page photos)";
     
     # Process each photo in this page
@@ -444,7 +446,6 @@ while ($page <= $pages) {
     }
     
     $photos_retrieved += $photos_in_page;
-    $pages = $hash->{photos}->{pages} || 1;
     
     print "Completed page $page of $pages (total: $photos_retrieved photos)";
     
