@@ -1,4 +1,24 @@
 #!/usr/bin/perl
+# =============================================================================
+# Flickr Photo Organizer and Description Updater
+#
+# This script searches for all photos of the authenticated Flickr user,
+# retrieves their metadata (title, description, tags, and photosets/sets),
+# and updates the description of each photo by appending or replacing a block
+# with links to relevant sets (country, order, family, species, date).
+#
+# Features:
+#   - Filter photos by upload date, tags, or number of days.
+#   - Dry-run mode for testing without making changes.
+#   - Custom regex for matching set titles.
+#   - Exponential backoff for Flickr API calls.
+#   - Debug mode for detailed output.
+#
+# Usage:
+#   ./script.pl [options]
+#   See usage() for all options.
+# =============================================================================
+
 use strict;
 use warnings;
 use Getopt::Long;
@@ -6,29 +26,30 @@ use Flickr::API;
 use POSIX qw(strftime);
 use Time::Local 'timegm';
 use Data::Dumper;  # For debug output
+
+# Set output record and field separators for cleaner output
 binmode(STDOUT, ':utf8');
+$\ = "\n";  # Output record separator
+$, = " ";   # Output field separator
 
-# Set output record and field separators
-$\ = "\n";
-$, = " ";
-
-# Load Flickr API configuration from storable config file
+# Load Flickr API configuration from a storable config file
 my $config_file = "$ENV{HOME}/saved-flickr.st";
 my $flickr = Flickr::API->import_storable_config($config_file);
 
 # Global debug flag (undef = off, 1+ = debug level)
 my $debug;
 
-# Enhanced usage subroutine to display detailed help message
+# =============================================================================
+# Subroutine: usage()
+# Displays detailed help message and exits.
+# =============================================================================
 sub usage {
     print <<'END_USAGE';
 Search all user photos on Flickr, retrieve title, description, tags, and photosets (sets) they belong to, and update the description of each photo by appending or replacing a specific block with links to relevant sets, including species.
-
 Usage:
   $0 [--after <date>] [--before <date>] [--days <days>] [--max-photos <num>] [--tag <tag>]... [--page <num>] [--dry-run] [--country-regex <regex>] [--order-regex <regex>] [--family-regex <regex>] [--debug [<level>]]
   $0 [-a <date>] [-b <date>] [-d <days>] [-m <num>] [-t <tag>]... [-p <num>] [-n] [--country-regex <regex>] [--order-regex <regex>] [--family-regex <regex>] [--debug [<level>]]
   $0 --help
-
 Options:
   -a, --after        Minimum upload date in YYYY-MM-DD format to include photos uploaded after or on this date
   -b, --before       Maximum upload date in YYYY-MM-DD format to include photos uploaded before or on this date
@@ -42,7 +63,6 @@ Options:
   --family-regex     Custom regex for matching family sets (default: .+idae(?:\s+|$))
   --debug [<level>]  Enable debug output (level controls Dumper depth, default: 1)
   -h, --help         Display this help message and exit
-
 The script searches for all photos of the authenticated user,
 retrieves title, description, tags (as array), and sets (photosets titles as array).
 It fetches current data from Flickr (filtered by date/tags if provided),
@@ -52,7 +72,10 @@ END_USAGE
     exit;
 }
 
-# Debug print function
+# =============================================================================
+# Subroutine: debug_print()
+# Prints debug messages and optionally dumps data using Data::Dumper.
+# =============================================================================
 sub debug_print {
     return unless defined $debug;
     my ($message, $data) = @_;
@@ -65,68 +88,83 @@ sub debug_print {
     }
 }
 
-# Robust Flickr API call with exponential backoff
+# =============================================================================
+# Subroutine: flickr_api_call()
+# Makes a robust Flickr API call with exponential backoff for retries.
+# =============================================================================
 sub flickr_api_call {
     my ($method, $args) = @_;
     my $max_retries = 5;
     my $retry_delay = 1;
-    
+
     debug_print("API CALL: $method with args: ", $args);
-    
+
     for my $attempt (1 .. $max_retries) {
         my $response = eval {
             $flickr->execute_method($method, $args)
         };
-        
+
         if ($@ || !$response->{success}) {
             my $error = $@ || $response->{error_message} || 'Unknown error';
             warn "Attempt $attempt failed for $method: $error";
-            
+
             if ($attempt == $max_retries) {
                 die "Failed to execute $method after $max_retries attempts: $error";
             }
-            
+
             sleep $retry_delay;
             $retry_delay *= 8;  # Exponential backoff
             next;
         }
-        
+
         debug_print("API RESPONSE: $method", $response->as_hash());
-        
+
         return $response;
     }
 }
 
-# Get sets information for a single photo
+# =============================================================================
+# Subroutine: get_photo_sets()
+# Retrieves the sets (photosets) a photo belongs to.
+# =============================================================================
 sub get_photo_sets {
     my ($pid) = @_;
-    
+
     debug_print("Getting sets for photo: $pid");
-    
+
     my $response = eval {
         flickr_api_call('flickr.photos.getAllContexts', { photo_id => $pid })
     };
-    
+
     if ($@) {
         warn "Failed to get contexts for photo $pid: $@";
         return undef;
     }
-    
+
     my $hash = $response->as_hash();
     my $sets = $hash->{set} || [];
     $sets = [$sets] unless ref $sets eq 'ARRAY';
-    
+
     debug_print("Found " . scalar(@$sets) . " sets for photo $pid");
-    
+
     # Create object with set IDs as keys and titles as values
     my %sets_obj = map { $_->{id} => $_->{title} } @$sets;
-    
+
     return \%sets_obj;
 }
 
+# =============================================================================
+# Main Script: Parse command-line options and process photos
+# =============================================================================
+
 # Declare variables for command-line options
-my ($after_date, $before_date, $days, $max_photos, $start_page, $dry_run, $country_regex, $order_regex, $family_regex);
+my ($after_date, $before_date, $days, $max_photos, $start_page, $dry_run);
 my @tags;
+
+# Declare regex variables with defaults
+my $country_re = qr/\(\d{4}.*\)/;
+my $order_re   = qr/.+FORMES/;
+my $family_re  = qr/.+idae(?:\s+|$)/;
 
 # Parse command-line options with optional debug level
 GetOptions(
@@ -137,13 +175,14 @@ GetOptions(
     "t|tag=s"          => \@tags,
     "p|page=i"         => \$start_page,
     "n|dry-run"        => \$dry_run,
-    "country-regex=s"  => \$country_regex,
-    "order-regex=s"    => \$order_regex,
-    "family-regex=s"   => \$family_regex,
+    "country-regex=s"  => sub { eval { $country_re = qr/$_[1]/ } or die "Invalid country regex: $@ "; },
+    "order-regex=s"    => sub { eval { $order_re = qr/$_[1]/ } or die "Invalid order regex: $@ "; },
+    "family-regex=s"   => sub { eval { $family_re = qr/$_[1]/ } or die "Invalid family regex: $@ "; },
     "debug:i"          => \$debug,  # Optional integer argument
     "h|help"           => \&usage
 ) or usage();
 
+# Validate date range
 if (defined $after_date && defined $before_date && $after_date gt $before_date) {
     die "Error: After date ($after_date) cannot be after before date ($before_date)\n";
 }
@@ -158,14 +197,11 @@ if (defined $debug) {
     print "DEBUG MODE ENABLED (level: $debug)";
     debug_print("Command line options:", {
         after_date => $after_date,
-        before_date => $before_date, 
+        before_date => $before_date,
         days => $days,
         max_photos => $max_photos,
         start_page => $start_page,
         dry_run => $dry_run,
-        country_regex => $country_regex,
-        order_regex => $order_regex,
-        family_regex => $family_regex,
         tags => \@tags
     });
 }
@@ -173,17 +209,6 @@ if (defined $debug) {
 if ($dry_run) {
     print "Running in dry-run mode: No changes will be made to Flickr.";
 }
-
-# Compile regexes, with defaults and sanitization
-my $country_re = qr/\(\d{4}.*\)/;
-eval { $country_re = qr/$country_regex/; } or die "Invalid $country_regex: $@ " if defined $country_regex;
-
-
-my $order_re = qr/.+FORMES/;
-eval { $order_re = qr/$order_regex/; } or die "Invalid $order_regex: $@ " if defined $order_regex;
-
-my $family_re = qr/.+idae(?:\s+|$)/;
-eval { $family_re = qr/$family_regex/; } or die "Invalid $family_regex: $@ " if defined $family_regex;
 
 # Build search arguments
 my $search_args = {
@@ -195,9 +220,7 @@ my $search_args = {
 
 # Add date filters as timestamps
 $search_args->{min_upload_date} = time() - ($days * 86400) if defined $days;
-
 $search_args->{min_upload_date} = $after_date if defined $after_date;
-
 $search_args->{max_upload_date} = $before_date if defined $before_date;
 
 # Add tag filters if specified
@@ -225,14 +248,15 @@ while ($page <= $pages) {
         $search_args->{per_page} = $max_photos - $photos_retrieved;
         debug_print("Adjusting per_page to $search_args->{per_page} for last page");
     }
-    
+
     $search_args->{page} = $page;
-    
+
     debug_print("Fetching page $page with per_page: $search_args->{per_page}");
-    
+
     my $response = eval {
         flickr_api_call('flickr.photos.search', $search_args)
     };
+
     if ($@) {
         die "Failed to search photos: $@";
     }
@@ -240,13 +264,11 @@ while ($page <= $pages) {
     my $hash = $response->as_hash();
     my $photos = $hash->{photos}->{photo} || [];
     $photos = [$photos] unless ref $photos eq 'ARRAY';
-    
+
     my $photos_in_page = scalar(@$photos);
-
     $pages = $hash->{photos}->{pages} || 1;
-
     print "Processing page $page of $pages ($photos_in_page photos)";
-    
+
     # Process each photo in this page
     foreach my $photo (@$photos) {
         my $id = $photo->{id};
@@ -254,9 +276,7 @@ while ($page <= $pages) {
         my $title = $photo->{title} // '';
         my $current_desc = ref $photo->{description} eq 'HASH' ? $photo->{description}{_content} // '' : $photo->{description} // '';
         my $tags_str = $photo->{tags} // '';
-
         debug_print("Processing photo $id: '$title'");
-
         my $sets = get_photo_sets($id) || {};
 
         # Find matching sets
@@ -265,6 +285,7 @@ while ($page <= $pages) {
         my $family_set;
         my $species_set;
         my $date_set;
+
         foreach my $set_id (keys %$sets) {
             my $set_title = $sets->{$set_id};
             if ($set_title =~ $country_re) {
@@ -355,14 +376,14 @@ while ($page <= $pages) {
         $changes{total_processed}++;
         print "Processed photo $id ($changes{total_processed} total)";
     }
-    
+
     $photos_retrieved += $photos_in_page;
-    
+
     print "Completed page $page of $pages (total: $photos_retrieved photos)";
-    
+
     # Stop if we've reached max_photos
     last if (defined $max_photos && $photos_retrieved >= $max_photos);
-    
+
     $page++;
 }
 
