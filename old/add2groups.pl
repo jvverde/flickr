@@ -83,35 +83,6 @@ die "Error logging in: $login_response->{error_message}" unless $login_response-
 my $user_nsid = $login_response->as_hash->{user}->{id};
 print "Debug: Current user NSID: $user_nsid" if $debug;
 
-# Function to check if a group allows posting
-sub group_allows_posting {
-    my ($group) = @_;
-    my $group_id = $group->{nsid};
-    my $group_name = $group->{name};
-    
-    # Get detailed group info
-    my $info_response = $flickr->execute_method('flickr.groups.getInfo', { group_id => $group_id });
-    unless ($info_response->{success}) {
-        warn "Error fetching info for group $group_id: $info_response->{error_message}";
-        return 0;
-    }
-    
-    my $group_info = $info_response->as_hash->{group};
-    
-    # Check posting limits
-    my $throttle = $group_info->{throttle} || {};
-    my $remaining = $throttle->{remaining} // 0;
-    my $limit_mode = $throttle->{mode} // 'none';
-    
-    if ($limit_mode ne 'none' && $remaining <= 0) {
-        print "Debug: Group '$group_name' has no remaining posts (limit: $throttle->{count} per $limit_mode), skipping." if $debug;
-        return 0;
-    }
-    
-    print "Debug: Group '$group_name' allows posting ($remaining remaining)" if $debug;
-    return 1;
-}
-
 # Get all photosets (sets) for the user
 my $sets_response = $flickr->execute_method('flickr.photosets.getList', { user_id => $user_nsid });
 die "Error fetching photosets: $sets_response->{error_message}" unless $sets_response->{success};
@@ -137,14 +108,14 @@ print "Debug: Dumping groups response", Dumper($groups_response->as_hash) if def
 my $all_groups = $groups_response->as_hash->{groups}->{group} || [];
 $all_groups = [ $all_groups ] unless ref $all_groups eq 'ARRAY';
 
-# Filter matching groups that allow posting in one step
-my @matching_groups = grep { group_allows_posting($_) } grep { ($_->{name} || '') =~ $group_match } @$all_groups;
+# Filter matching groups
+my @matching_groups = grep { ($_->{name} || '') =~ $group_match } @$all_groups;
 
 if (!@matching_groups) {
-    print "No groups matching pattern '$group_pattern' allow posting.";
+    print "No groups matching pattern '$group_pattern' found.";
     exit;
 }
-print "Debug: Found " . scalar(@matching_groups) . " matching groups that allow posting." if $debug;
+print "Debug: Found " . scalar(@matching_groups) . " matching groups." if $debug;
 
 # Try to find a suitable group and photo
 my $max_tries = 20;
