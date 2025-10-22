@@ -333,8 +333,8 @@ while ($page <= $pages) {
         next unless @lines;
 
         # Build the description block with markers for later replacement
-        my $marker = "==================***==================\n";
-        my $block = $marker .
+        my $marker = "==================***==================";
+        my $block = "$marker\n" .
                     "All my photos are now organized into sets by the country where they were taken, by taxonomic order, by family, by species (often with just one photo for the rarer ones), and by the date they were taken.\n" .
                     "So, you may find:\n" .
                     join("\n", @lines) . "\n" .
