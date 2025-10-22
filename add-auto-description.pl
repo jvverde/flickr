@@ -333,14 +333,14 @@ while ($page <= $pages) {
         next unless @lines;
 
         # Build the description block with markers for later replacement
-        my $block = "==================***==================\n" .
+        my $marker = "==================***==================\n";
+        my $block = $marker .
                     "All my photos are now organized into sets by the country where they were taken, by taxonomic order, by family, by species (often with just one photo for the rarer ones), and by the date they were taken.\n" .
                     "So, you may find:\n" .
                     join("\n", @lines) . "\n" .
-                    "==================***==================\n";
+                    $marker;
 
         # Check if block exists and build new description
-        my $marker = "==================***==================";
         my $new_desc = $current_desc;
         if ($current_desc =~ /\Q$marker\E.*?\Q$marker\E/s) {
             # Replace existing block between markers
