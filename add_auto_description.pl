@@ -29,14 +29,14 @@ use Data::Dumper;  # For debug output
 
 # Set output record and field separators for cleaner output
 binmode(STDOUT, ':utf8');
-$\ = "\n";  # Output record separator
-$, = " ";   # Output field separator
+$\ = "\n";  # Output record separator (auto-add newline to prints)
+$, = " ";   # Output field separator (space between print arguments)
 
 # Load Flickr API configuration from a storable config file
 my $config_file = "$ENV{HOME}/saved-flickr.st";
 my $flickr = Flickr::API->import_storable_config($config_file);
 
-# Global debug flag (undef = off, 1+ = debug level)
+# Global debug flag (undef = off, 1+ = debug level for Data::Dumper depth)
 my $debug;
 
 # =============================================================================
@@ -75,6 +75,7 @@ END_USAGE
 # =============================================================================
 # Subroutine: debug_print()
 # Prints debug messages and optionally dumps data using Data::Dumper.
+# Only outputs when $debug is defined (set via --debug flag).
 # =============================================================================
 sub debug_print {
     return unless defined $debug;
@@ -91,11 +92,13 @@ sub debug_print {
 # =============================================================================
 # Subroutine: flickr_api_call()
 # Makes a robust Flickr API call with exponential backoff for retries.
+# Retries up to 5 times with increasing delays (1s, 8s, 64s, 512s, 4096s).
+# Dies after max retries exceeded.
 # =============================================================================
 sub flickr_api_call {
     my ($method, $args) = @_;
     my $max_retries = 5;
-    my $retry_delay = 1;
+    my $retry_delay = 1;  # Initial delay in seconds
 
     debug_print("API CALL: $method with args: ", $args);
 
@@ -104,16 +107,19 @@ sub flickr_api_call {
             $flickr->execute_method($method, $args)
         };
 
+        # Check for errors in response or eval
         if ($@ || !$response->{success}) {
             my $error = $@ || $response->{error_message} || 'Unknown error';
             warn "Attempt $attempt failed for $method: $error";
 
+            # Give up after max retries
             if ($attempt == $max_retries) {
                 die "Failed to execute $method after $max_retries attempts: $error";
             }
 
+            # Exponential backoff: wait before retrying
             sleep $retry_delay;
-            $retry_delay *= 8;  # Exponential backoff
+            $retry_delay *= 8;
             next;
         }
 
@@ -126,6 +132,8 @@ sub flickr_api_call {
 # =============================================================================
 # Subroutine: get_photo_sets()
 # Retrieves the sets (photosets) a photo belongs to.
+# Returns a hashref with set IDs as keys and titles as values.
+# Returns undef on error (handled by caller with || {}).
 # =============================================================================
 sub get_photo_sets {
     my ($pid) = @_;
@@ -143,14 +151,18 @@ sub get_photo_sets {
 
     my $hash = $response->as_hash();
     my $sets = $hash->{set} || [];
+    # Normalize to array if single set returned
     $sets = [$sets] unless ref $sets eq 'ARRAY';
 
-    debug_print("Found " . scalar(@$sets) . " sets for photo $pid");
+    debug_print("Found " . scalar(@$sets) . " sets for photo $pid", $sets);
 
-    # Create object with set IDs as keys and titles as values
-    my %sets_obj = map { $_->{id} => $_->{title} } @$sets;
-
-    return \%sets_obj;
+    # Create hashref with set IDs as keys and titles as values
+    return { map { 
+        $_->{id} => { 
+            title => $_->{title},
+            cnt => $_->{count_photo}
+        }
+    } @$sets };
 }
 
 # =============================================================================
@@ -161,10 +173,10 @@ sub get_photo_sets {
 my ($after_date, $before_date, $days, $max_photos, $start_page, $dry_run);
 my @tags;
 
-# Declare regex variables with defaults
-my $country_re = qr/\(\d{4}.*\)/;
-my $order_re   = qr/.+FORMES/;
-my $family_re  = qr/.+idae(?:\s+|$)/;
+# Declare regex variables with defaults for matching set titles
+my $country_re = qr/\(\d{4}.*\)/;           # Matches "(2024...)" pattern
+my $order_re   = qr/.+FORMES/;              # Matches taxonomic orders ending in "FORMES"
+my $family_re  = qr/.+idae(?:\s+|$)/;       # Matches taxonomic families ending in "idae"
 
 # Parse command-line options with optional debug level
 GetOptions(
@@ -178,13 +190,19 @@ GetOptions(
     "country-regex=s"  => sub { eval { $country_re = qr/$_[1]/ } or die "Invalid country regex: $@ "; },
     "order-regex=s"    => sub { eval { $order_re = qr/$_[1]/ } or die "Invalid order regex: $@ "; },
     "family-regex=s"   => sub { eval { $family_re = qr/$_[1]/ } or die "Invalid family regex: $@ "; },
-    "debug:i"          => \$debug,  # Optional integer argument
+    "debug:i"          => \$debug,  # Optional integer argument for depth control
     "h|help"           => \&usage
 ) or usage();
 
-# Validate date range
+# Validate date range and prevent conflicting date options
 if (defined $after_date && defined $before_date && $after_date gt $before_date) {
     die "Error: After date ($after_date) cannot be after before date ($before_date)\n";
+}
+if (defined $days && defined $after_date) {
+    die "Error: Cannot specify both --days and --after\n";
+}
+if (defined $days && defined $before_date) {
+    die "Error: Cannot specify both --days and --before\n";
 }
 
 # Set default debug level if --debug is used without argument
@@ -210,20 +228,20 @@ if ($dry_run) {
     print "Running in dry-run mode: No changes will be made to Flickr.";
 }
 
-# Build search arguments
+# Build search arguments for Flickr API
 my $search_args = {
     user_id  => 'me',
-    per_page => 500,
+    per_page => 500,  # Maximum allowed by Flickr API
     extras   => 'date_upload,owner,title,description,tags',
     page     => $start_page || 1
 };
 
-# Add date filters as timestamps
+# Add date filters (Flickr API accepts YYYY-MM-DD format directly)
 $search_args->{min_upload_date} = time() - ($days * 86400) if defined $days;
 $search_args->{min_upload_date} = $after_date if defined $after_date;
 $search_args->{max_upload_date} = $before_date if defined $before_date;
 
-# Add tag filters if specified
+# Add tag filters if specified (AND logic: all tags must match)
 if (@tags) {
     $search_args->{tags} = join(',', @tags);
     $search_args->{tag_mode} = 'all';  # Require all tags (AND logic)
@@ -263,6 +281,7 @@ while ($page <= $pages) {
 
     my $hash = $response->as_hash();
     my $photos = $hash->{photos}->{photo} || [];
+    # Normalize to array if single photo returned
     $photos = [$photos] unless ref $photos eq 'ARRAY';
 
     my $photos_in_page = scalar(@$photos);
@@ -274,120 +293,101 @@ while ($page <= $pages) {
         my $id = $photo->{id};
         my $owner = $photo->{owner};
         my $title = $photo->{title} // '';
+        # Handle both hash and string description formats from API
         my $current_desc = ref $photo->{description} eq 'HASH' ? $photo->{description}{_content} // '' : $photo->{description} // '';
         my $tags_str = $photo->{tags} // '';
         debug_print("Processing photo $id: '$title'");
+        
+        # Get all sets this photo belongs to (returns {} if none or error)
         my $sets = get_photo_sets($id) || {};
 
-        # Find matching sets
+        # Find matching sets using ||= to keep only the FIRST match of each type
         my $country_set;
         my $order_set;
         my $family_set;
         my $species_set;
         my $date_set;
 
-        foreach my $set_id (keys %$sets) {
-            my $set_title = $sets->{$set_id};
-            if ($set_title =~ $country_re) {
-                $country_set ||= {id => $set_id, title => $set_title};  # Take first match
-            }
-            if ($set_title =~ $order_re) {
-                $order_set ||= {id => $set_id, title => $set_title};
-            }
-            if ($set_title =~ $family_re) {
-                $family_set ||= {id => $set_id, title => $set_title};
-            }
-            if ($set_title =~ /^[A-Z][a-z]+ [a-z]+$/) {
-                $species_set ||= {id => $set_id, title => $set_title};
-            }
-            if ($set_title =~ m#\d{4}/\d{2}/\d{2}#) {
-                $date_set ||= {id => $set_id, title => $set_title};
-            }
+        foreach my $id (keys %$sets) {
+            #my $set_title = $sets->{$id}{title};
+            #my $cnt = $sets->{$id}{cnt} || '';
+            my ($title, $cnt) = @{$sets->{$id}}{qw(title cnt)};
+            # Use ||= to assign only if not already set (keeps first match)
+            $country_set ||= {id => $id, title => $title, cnt => $cnt} if $title =~ $country_re;
+            $order_set   ||= {id => $id, title => $title, cnt => $cnt} if $title =~ $order_re;
+            $family_set  ||= {id => $id, title => $title, cnt => $cnt} if $title =~ $family_re;
+            $species_set ||= {id => $id, title => $title, cnt => $cnt} if $title =~ /^[A-Z][a-z]+ [a-z]+$/;  # Binomial nomenclature
+            $date_set    ||= {id => $id, title => $title, cnt => $cnt} if $title =~ m#\d{4}/\d{2}/\d{2}#;
         }
 
-        # Build lines if matches found
+        # Build lines for each matching set type
+        my $base = "https://www.flickr.com/photos/$owner/albums/";
         my @lines;
-        if ($country_set) {
-            my $link = "https://www.flickr.com/photos/$owner/albums/$country_set->{id}";
-            push @lines, qq|  - All the photos for this trip <a href="$link">$country_set->{title}</a>|;
-        }
-        if ($order_set) {
-            my $link = "https://www.flickr.com/photos/$owner/albums/$order_set->{id}";
-            push @lines, qq|  - All the photos for this order <a href="$link">$order_set->{title}</a>|;
-        }
-        if ($family_set) {
-            my $link = "https://www.flickr.com/photos/$owner/albums/$family_set->{id}";
-            push @lines, qq|  - All the photos for this family <a href="$link">$family_set->{title}</a>|;
-        }
-        if ($species_set) {
-            my $link = "https://www.flickr.com/photos/$owner/albums/$species_set->{id}";
-            push @lines, qq|  - All the photos for this species <a href="$link">$species_set->{title}</a>|;
-        }
-        if ($date_set) {
-            my $link = "https://www.flickr.com/photos/$owner/albums/$date_set->{id}";
-            push @lines, qq|  - All the photos taken this day <a href="$link">$date_set->{title}</a>|;
-        }
+        push @lines, qq|  - All the photos for this trip <a href="$base/albums/$country_set->{id}">$country_set->{title}</a> ($country_set->{cnt})| if $country_set;
+        push @lines, qq|  - All the photos for this order <a href="$base/$order_set->{id}">$order_set->{title}</a> ($order_set->{cnt})| if $order_set;
+        push @lines, qq|  - All the photos for this family <a href="$base/$family_set->{id}">$family_set->{title}</a> ($family_set->{cnt})| if $family_set;
+        push @lines, qq|  - All the photos for this species <a href="$base/$species_set->{id}">$species_set->{title}</a> ($species_set->{cnt})| if $species_set;
+        push @lines, qq|  - All the photos taken this day <a href="$base/$date_set->{id}">$date_set->{title}</a> ($date_set->{cnt})| if $date_set;
 
-        if (@lines) {
-            my $block = "==================***==================\n" .
-                        "All my photos are now organized into sets by the country where they were taken, by taxonomic order, by family, by species (often with just one photo for the rarer ones), and by the date they were taken.\n" .
-                        "So, you may find:\n" .
-                        join("\n", @lines) . "\n" .
-                        "==================***==================\n";
+        # Skip photo if no matching sets found
+        next unless @lines;
 
-            # Check if block exists and build new description
-            my $marker = "==================***==================";
-            my $new_desc = $current_desc;
-            if ($current_desc =~ /\Q$marker\E.*?\Q$marker\E/s) {
-                # Replace existing block
-                $new_desc =~ s/\Q$marker\E.*?\Q$marker\E/$block/s;
-            } else {
-                # Append if not exists
-                $new_desc .= ($current_desc ? "\n" : "") . $block;
-            }
+        # Build the description block with markers for later replacement
+        my $block = "==================***==================\n" .
+                    "All my photos are now organized into sets by the country where they were taken, by taxonomic order, by family, by species (often with just one photo for the rarer ones), and by the date they were taken.\n" .
+                    "So, you may find:\n" .
+                    join("\n", @lines) . "\n" .
+                    "==================***==================\n";
 
-            # Update if changed
-            if ($new_desc ne $current_desc) {
-                if (!$dry_run) {
-                    eval {
-                        flickr_api_call('flickr.photos.setMeta', {
-                            photo_id    => $id,
-                            title       => $title,  # Keep same
-                            description => $new_desc
-                        });
-                    };
-                    if ($@) {
-                        warn "Failed to update photo $id: $@";
-                    } else {
-                        $changes{updated}++;
-                        print "Updated description for photo $title ($id)";
-                    }
-                } else {
-                    $changes{updated}++;
-                    print "Would update description for photo $title (dry-run):\n\t$new_desc";
-                }
-            } else {
-                debug_print("No change needed for photo $id");
-            }
+        # Check if block exists and build new description
+        my $marker = "==================***==================";
+        my $new_desc = $current_desc;
+        if ($current_desc =~ /\Q$marker\E.*?\Q$marker\E/s) {
+            # Replace existing block between markers
+            $new_desc =~ s/\Q$marker\E.*?\Q$marker\E/$block/s;
         } else {
-            debug_print("No relevant sets for photo $id, skipping");
+            # Append block if not exists (with newline separator if description exists)
+            $new_desc .= ($current_desc ? "\n" : "") . $block;
         }
 
+        # Skip if no changes needed
+        next unless $new_desc ne $current_desc;
+
+        # Update description on Flickr (or simulate in dry-run mode)
+        unless ($dry_run) {
+            eval {
+                flickr_api_call('flickr.photos.setMeta', {
+                    photo_id    => $id,
+                    title       => $title,  # Keep existing title
+                    description => $new_desc
+                });
+            };
+            # Skip this photo if update failed (already warned in flickr_api_call)
+            next if $@;
+        }
+
+        $changes{updated}++;
+        print $dry_run 
+            ? "Would update description for photo $title (dry-run):\n\t$new_desc"
+            : "Updated description for photo $title ($id)";
+
+    } continue {
+        # Always execute: increment total processed counter even if 'next' was called
         $changes{total_processed}++;
-        print "Processed photo $id ($changes{total_processed} total)";
+        print "Total processed photos: $changes{total_processed}";
     }
 
     $photos_retrieved += $photos_in_page;
 
     print "Completed page $page of $pages (total: $photos_retrieved photos)";
 
-    # Stop if we've reached max_photos
+    # Stop if we've reached max_photos limit
     last if (defined $max_photos && $photos_retrieved >= $max_photos);
 
     $page++;
 }
 
-# Skip if no photos found
+# Exit early if no photos found
 if ($changes{total_processed} == 0) {
     print "No photos found matching the specified criteria";
     exit;
