@@ -323,7 +323,7 @@ while ($page <= $pages) {
         # Build lines for each matching set type
         my $base = "https://www.flickr.com/photos/$owner/albums/";
         my @lines;
-        push @lines, qq|  - All the photos for this trip <a href="$base/albums/$country_set->{id}">$country_set->{title}</a> ($country_set->{cnt})| if $country_set;
+        push @lines, qq|  - All the photos for this trip <a href="$base/$country_set->{id}">$country_set->{title}</a> ($country_set->{cnt})| if $country_set;
         push @lines, qq|  - All the photos for this order <a href="$base/$order_set->{id}">$order_set->{title}</a> ($order_set->{cnt})| if $order_set;
         push @lines, qq|  - All the photos for this family <a href="$base/$family_set->{id}">$family_set->{title}</a> ($family_set->{cnt})| if $family_set;
         push @lines, qq|  - All the photos for this species <a href="$base/$species_set->{id}">$species_set->{title}</a> ($species_set->{cnt})| if $species_set;
