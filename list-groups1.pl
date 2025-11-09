@@ -55,7 +55,6 @@ my $flickr = Flickr::API->import_storable_config($config_file);
 my $login_response = $flickr->execute_method('flickr.test.login');
 die "Error logging in: $login_response->{error_message}" unless $login_response->{success};
 my $user_nsid = $login_response->as_hash->{user}->{id};
-# Check changed to 'defined $debug'
 warn "Debug: Logged in as $user_nsid\n" if defined $debug;
 
 # Pre-compile the patterns for efficiency and handle case-insensitivity
@@ -73,7 +72,6 @@ foreach my $p (@patterns) {
 my $groups_response = $flickr->execute_method('flickr.groups.pools.getGroups', {});
 die "Error fetching pool groups: $groups_response->{error_message}" unless $groups_response->{success};
 
-# Check changed to 'defined $debug && $debug > 2'
 warn Dumper($groups_response->as_hash) if defined $debug && $debug > 2;
 
 my $groups = $groups_response->as_hash->{groups}->{group} || [];
@@ -84,7 +82,6 @@ if (!@$groups) {
     exit;
 }
 
-# Check changed to 'defined $debug'
 warn "Debug: Found " . scalar(@$groups) . " groups.\n" if defined $debug;
 
 my @results;
@@ -102,7 +99,6 @@ foreach my $g (@$groups) {
         warn "Error fetching info for $gname ($gid): $info->{error_message}\n";
         next;
     }
-    # Check changed to 'defined $debug && $debug > 1'
     warn Dumper($info->as_hash) if defined $debug && $debug > 1;
 
     my $data = $info->as_hash->{group};
@@ -135,14 +131,13 @@ foreach my $g (@$groups) {
             last; # Stop on the first match
         }
     }
-    # Check changed to 'defined $debug'
     warn "Debug: Group '$gname' is especial (Pattern: $matched_pattern, Substring: $matched_substring).\n" if defined $debug && $is_especial;
 
     my $entry = {
-        # --- Timestamp fields added here ---
-        timestamp_epoch => $timestamp_epoch,
-        timestamp_human => $timestamp_human,
-        # -----------------------------------
+        # --- Renamed Timestamp fields added here ---
+        timestamp     => $timestamp_epoch,
+        checked       => $timestamp_human,
+        # -------------------------------------------
         id            => $gid,
         name          => $gname,
         privacy       => $privacy,
