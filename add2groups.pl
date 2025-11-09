@@ -40,6 +40,7 @@ $\ = "\n";
 # Disable output buffering on STDOUT. This ensures 'print' messages are visible immediately, 
 # which is critical when piping output to commands like 'tee'.
 $| = 1;
+select(STDERR); $| = 1; select(STDOUT); # Unbuffers STDERR, then switches back to STDOUT
 
 # Global API and User Variables
 my $flickr;                # Flickr::API object instance
