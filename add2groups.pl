@@ -36,6 +36,11 @@ use Fcntl qw(:flock); # Required for file locking and robust file I/O
 # Set output record separator to always print a newline
 $\ = "\n";
 
+# --- BUFFERING FIX ---
+# Disable output buffering on STDOUT. This ensures 'print' messages are visible immediately, 
+# which is critical when piping output to commands like 'tee'.
+$| = 1;
+
 # Global API and User Variables
 my $flickr;                # Flickr::API object instance
 my $user_nsid;             # Current user's Flickr NSID
