@@ -310,84 +310,126 @@ sub check_posting_status {
     };
 }
 
-## Find a random photo from matching sets (Optimized for true randomness)
-# Selects a random set, a random page, and a random photo on that page.
+## Find a random photo from matching sets (Optimized for true randomness with retries)
 sub find_random_photo {
     my ($sets_ref) = @_;
     
     my $PHOTOS_PER_PAGE = 250; 
     
-    # 1. Select a random set
-    my $random_set_index = int(rand(@$sets_ref));
-    my $selected_set = $sets_ref->[$random_set_index];
-    my $set_id = $selected_set->{id};
-    my $total = $selected_set->{photos};
+    # Tracking for retries
+    my %used_set_ids;
+    my %used_pages_by_set;
+    my %used_photo_indices; # Tracks index on the current page to ensure randomness
+
+    # 1. OUTER LOOP: Retry sets until all are exhausted
+    my @sets_to_try = @$sets_ref;
+    while (@sets_to_try) {
         
-    return if $total == 0; # Concise check
-    warn "Debug: Set $set_id has no photos, skipping set." if defined $debug and $total == 0;
-    
-    # Calculate the maximum page number
-    my $max_page = int(($total - 1) / $PHOTOS_PER_PAGE) + 1;
-    
-    # 2. Select a random page
-    my $random_page = int(rand($max_page)) + 1;
-
-    # 3. Get the photos on that random page
-    my $get_photos_params = { 
-        photoset_id => $set_id, 
-        per_page => $PHOTOS_PER_PAGE, 
-        page => $random_page,
-        privacy_filter => 1, # Public photos only
-        extras => 'date_taken',
-    };
-
-    my $set_photos_response = $flickr->execute_method('flickr.photosets.getPhotos', $get_photos_params);
-    unless ($set_photos_response->{success}) {
-        warn "Error fetching photos from set $set_id: $set_photos_response->{error_message}";
-        return;
-    }
-    
-    my $photos_on_page = $set_photos_response->as_hash->{photoset}->{photo} || [];
-    $photos_on_page = [ $photos_on_page ] unless ref $photos_on_page eq 'ARRAY';
-    
-    unless (@$photos_on_page) {
-        warn "Warning: Page $random_page returned no public photos, skipping set." if defined $debug;
-        return;
-    }
-
-    # 4. Select a truly random photo from the results on the page
-    my $random_photo_index = int(rand(@$photos_on_page));
-    my $selected_photo = $photos_on_page->[$random_photo_index];
-    
-    # 5. Check photo age
-    if (defined $max_age_timestamp && $selected_photo->{datetaken}) {
-        my $date_taken = $selected_photo->{datetaken};
-        my $photo_timestamp;
+        # Select a random set we haven't tried yet this cycle
+        my $set_index = int(rand(@sets_to_try));
+        my $selected_set = $sets_to_try[$set_index];
+        my $set_id = $selected_set->{id};
+        my $total = $selected_set->{photos};
         
-        # Parse different date formats
-        if ($date_taken =~ /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/) {
-            my ($year, $month, $day, $hour, $min, $sec) = ($1, $2, $3, $4, $5, $6);
-            $photo_timestamp = Time::Local::timelocal($sec, $min, $hour, $day, $month-1, $year-1900);
-        } elsif ($date_taken =~ /^(\d{4})-(\d{2})-(\d{2})$/) {
-            my ($year, $month, $day) = ($1, $2, $3);
-            $photo_timestamp = Time::Local::timelocal(0, 0, 0, $day, $month-1, $year-1900);
-        }
+        # Mark set as used and remove it from the list for the current retry level
+        splice(@sets_to_try, $set_index, 1);
+        $used_set_ids{$set_id} = 1;
 
-        if (defined $photo_timestamp && $photo_timestamp < $max_age_timestamp) {
-            warn "Debug: Photo '$selected_photo->{title}' ($selected_photo->{id}) is too old, skipping." if defined $debug;
-            return;
+        # Skip if the set is empty
+        next if $total == 0; 
+        
+        # Initialize page tracking for this set
+        $used_pages_by_set{$set_id} = {} unless exists $used_pages_by_set{$set_id};
+        
+        my $max_page = int(($total - 1) / $PHOTOS_PER_PAGE) + 1;
+        my @pages_to_try = (1..$max_page); # List of all pages in the set
+
+        # 2. MIDDLE LOOP: Retry pages within the current set
+        while (@pages_to_try) {
+            
+            # Select a random page we haven't tried yet
+            my $page_index = int(rand(@pages_to_try));
+            my $random_page = $pages_to_try[$page_index];
+            
+            # Mark page as used and remove it from the list
+            splice(@pages_to_try, $page_index, 1);
+            $used_pages_by_set{$set_id}->{$random_page} = 1;
+
+            # Get the photos on that random page
+            my $get_photos_params = { 
+                photoset_id => $set_id, 
+                per_page => $PHOTOS_PER_PAGE, 
+                page => $random_page,
+                privacy_filter => 1, 
+                extras => 'date_taken',
+            };
+
+            my $set_photos_response = $flickr->execute_method('flickr.photosets.getPhotos', $get_photos_params);
+            unless ($set_photos_response->{success}) {
+                warn "Error fetching photos from set $set_id, page $random_page: $set_photos_response->{error_message}";
+                next; # Try another page
+            }
+            
+            my $photos_on_page = $set_photos_response->as_hash->{photoset}->{photo} || [];
+            $photos_on_page = [ $photos_on_page ] unless ref $photos_on_page eq 'ARRAY';
+            
+            # Skip if the page is unexpectedly empty
+            unless (@$photos_on_page) {
+                warn "Warning: Page $random_page returned no public photos." if defined $debug;
+                next; # Try another page
+            }
+
+            # 3. INNER LOOP: Retry photos on the current page
+            my @photo_indices_to_try = (0..$#{$photos_on_page});
+            
+            while (@photo_indices_to_try) {
+                
+                # Select a truly random photo index from the remaining ones
+                my $index_to_try = int(rand(@photo_indices_to_try));
+                my $random_photo_index = $photo_indices_to_try[$index_to_try];
+                my $selected_photo = $photos_on_page->[$random_photo_index];
+                
+                # Remove this index from the pool for the current page
+                splice(@photo_indices_to_try, $index_to_try, 1);
+                
+                # --- Age Check ---
+                if (defined $max_age_timestamp && $selected_photo->{datetaken}) {
+                    my $date_taken = $selected_photo->{datetaken};
+                    my $photo_timestamp;
+                    
+                    # Parse different date formats (logic unchanged)
+                    if ($date_taken =~ /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/) {
+                        my ($year, $month, $day, $hour, $min, $sec) = ($1, $2, $3, $4, $5, $6);
+                        $photo_timestamp = Time::Local::timelocal($sec, $min, $hour, $day, $month-1, $year-1900);
+                    } elsif ($date_taken =~ /^(\d{4})-(\d{2})-(\d{2})$/) {
+                        my ($year, $month, $day) = ($1, $2, $3);
+                        $photo_timestamp = Time::Local::timelocal(0, 0, 0, $day, $month-1, $year-1900);
+                    }
+
+                    if (defined $photo_timestamp && $photo_timestamp < $max_age_timestamp) {
+                        warn "Debug: Photo '$selected_photo->{title}' ($selected_photo->{id}) is too old. Retrying photo." if defined $debug;
+                        next; # Photo is too old, go to next inner loop iteration (next photo)
+                    }
+                }
+
+                # --- Photo is Valid and Not Too Old ---
+                # Return the selected photo data
+                return {
+                    id => $selected_photo->{id},
+                    title => $selected_photo->{title} // 'Untitled Photo',
+                    set_title => $selected_set->{title} // 'Untitled Set',
+                    set_id => $set_id,
+                };
+            }
+            # Inner loop (photos on page) exhausted. Go to next middle loop iteration (next page).
         }
+        # Middle loop (pages in set) exhausted. Go to next outer loop iteration (next set).
     }
 
-    # 6. Return the selected photo data
-    return {
-        id => $selected_photo->{id},
-        title => $selected_photo->{title} // 'Untitled Photo',
-        set_title => $selected_set->{title} // 'Untitled Set',
-        set_id => $set_id,
-    };
+    # If all sets, all pages, and all photos have been tried and failed the age check:
+    warn "Warning: Exhausted all matching sets, pages, and photos. No photos found that meet the maximum age requirement." if defined $debug;
+    return;
 }
-
 ## Check if a specific photo is present in a group's pool (Context check)
 sub is_photo_in_group {
     my ($photo_id, $group_id) = @_;
