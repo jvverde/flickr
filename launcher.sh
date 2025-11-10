@@ -37,6 +37,13 @@ else
     LOG_FILE="${LOG_FILE_ARG}"
 fi
 
+# Function to run command with proper redirection
+run_command() {
+    # Execute the command with proper redirection
+    # Using exec to replace the current shell process with the command
+    eval "exec nohup $@ >> \"$LOG_FILE\" 2>&1"
+}
+
 # 2. Check for running process
 if pgrep -f "$COMMAND_TO_RUN" > /dev/null
 then
@@ -47,18 +54,34 @@ else
 
     echo "[$(date)] NOT running. Launching: '$COMMAND_TO_RUN'..." >> "$LOG_FILE"
     
+    # Create log directory if it doesn't exist
+    LOG_DIR=$(dirname "$LOG_FILE")
+    mkdir -p "$LOG_DIR"
+    
     # Use PUSHD and POPD to safely manage the working directory.
     # We use a subshell (...) to guarantee the push/pop operation is clean and isolated.
     (
         # Suppress output of pushd/popd commands to keep the log clean
         pushd "$SCRIPT_DIR" &> /dev/null
         
-        # Execute the command string with all relative paths correctly resolved.
-        # Eval is critical here to properly handle the internal quoting of the COMMAND_TO_RUN string.
-        eval "nohup $COMMAND_TO_RUN 2>&1 >> '$LOG_FILE' &"
+        # Run the command using the function in the background
+        run_command $COMMAND_TO_RUN &
+        
+        # Capture the background process PID
+        BACKGROUND_PID=$!
         
         # Restore original directory (this will execute whether eval succeeds or fails)
         popd &> /dev/null
+        
+        # Wait a moment to capture any immediate startup errors
+        sleep 2
+        
+        # Check if the background process is still running
+        if kill -0 $BACKGROUND_PID 2>/dev/null; then
+            echo "[$(date)] Command launched successfully with PID: $BACKGROUND_PID" >> "$LOG_FILE"
+        else
+            echo "[$(date)] WARNING: Command may have failed to start. Check log for errors." >> "$LOG_FILE"
+        fi
     )
     
     echo "[$(date)] Command launch complete. Check '$LOG_FILE' for output." >> "$LOG_FILE"
