@@ -8,8 +8,7 @@
 # KEY RELIABILITY IMPROVEMENTS:
 # - **MASTER RESTART LOOP:** Wraps all execution logic in an eval/while loop for complete self-healing 
 #   with exponential backoff against fatal errors (network, API, runtime bugs).
-# - **Robust API Wrapper:** 'flickr_api_call' includes retry logic and exponential backoff, 
-#   now returns **undef** on fatal API failure instead of calling die.
+# - **Robust API Wrapper:** 'flickr_api_call' includes retry logic and exponential backoff.
 # - **File Locking & Guaranteed Cleanup:** Uses 'flock' with guaranteed release and 
 #   handle closure, even if I/O operations fail.
 # - **Non-Fatal I/O:** File read/write failures result in a warning and script continuation.
@@ -300,7 +299,7 @@ sub init_flickr {
     
     # Check for fatal API error after retries
     unless (defined $response) {
-        return undef;
+        die "FATAL: Initial Flickr connection (flickr.test.login) failed after retries.";
     }
     
     $user_nsid = $response->as_hash->{user}->{id};
@@ -588,7 +587,7 @@ if ($list_groups) {
 # --- MASTER RESTART LOOP (Self-Healing Core) ---
 my $restart_attempt = 0;
 
-RESTART_LOOP: while (1) {
+while (1) { #RESTART_LOOP
     $restart_attempt++;
 
     eval {
@@ -658,7 +657,7 @@ RESTART_LOOP: while (1) {
             warn "\n--- Starting new posting cycle (Post #$post_count). Groups to attempt: " . scalar(@current_groups) . " ---" if defined $debug;
 
             # Attempt to find a suitable group/photo combination
-            for (1 .. $max_tries) {
+            POST_ATTEMPT_LOOP: for (1 .. $max_tries) {
                 last unless scalar @current_groups;
 
                 my $random_index = int(rand(@current_groups));
@@ -754,13 +753,16 @@ RESTART_LOOP: while (1) {
                 # Post the photo!
                 if ($dry_run) {
                     print "DRY RUN: Would add photo '$photo_title' ($photo_id) from set '$set_title' to group '$group_name' ($group_id)";
+                    
+                    $post_count++;
+                    last POST_ATTEMPT_LOOP; # <--- CORRECTED: Exits the FOR loop only.
                 } else {
                     my $response = flickr_api_call('flickr.groups.pools.add', { photo_id => $photo_id, group_id => $group_id });
                     
                     # 1. Check for Fatal API Error (undef) - Treat as non-script-fatal
                     unless (defined $response) {
                         print "WARNING: Could not add photo '$photo_title' ($photo_id) to group '$group_name' ($group_id). API failed after all retries. Will skip current group and continue script execution.";
-                        last; # Exit the inner 'for' loop and proceed to the global pause
+                        last POST_ATTEMPT_LOOP; # <--- CORRECTED: Exits the FOR loop only.
                     } elsif ($response->{success}) {
                         # 2. Check for SUCCESS
                         print "SUCCESS: Added photo '$photo_title' ($photo_id) to group '$group_name' ($group_id)";
@@ -790,7 +792,7 @@ RESTART_LOOP: while (1) {
                         }                       
                         
                         $post_count++;
-                        last; # Exit the inner loop on a successful post (real or dry-run)
+                        last POST_ATTEMPT_LOOP; # <--- CORRECTED: Exits the FOR loop only.
 
                     } else {
                         # 3. Check for Non-Fatal Error (Photo limit reached, Group Closed, etc.)
@@ -807,15 +809,18 @@ RESTART_LOOP: while (1) {
                             save_history();
                         }
                         
-                        last; # Exit the current 'for' loop and proceed to the global script pause.
+                        last POST_ATTEMPT_LOOP; # <--- CORRECTED: Exits the FOR loop only.
                     }
                 }
                 
-                # Pause between posting attempts
-                my $sleep_time = int(rand($timeout_max + 1));
-                print "Pausing for $sleep_time seconds before next attempt.";
-                sleep $sleep_time;
-            }
+                # If we get here without a 'last POST_ATTEMPT_LOOP', we hit a 'next' (retrying a group/photo combo)
+                # or the loop naturally finished. We only pause *after* the entire search loop has finished its attempt/post.
+            } # End of POST_ATTEMPT_LOOP
+
+            # Pause between posting attempts (This block is now guaranteed to run after a successful post)
+            my $sleep_time = int(rand($timeout_max + 1));
+            print "Pausing for $sleep_time seconds before next attempt.";
+            sleep $sleep_time;
         }
     }; # End of eval block
     
@@ -835,4 +840,6 @@ RESTART_LOOP: while (1) {
         
         sleep $delay;
     }
+    # If not a fatal error, the RESTART_LOOP continues, immediately running the next cycle, 
+    # ensuring the script never returns cleanly as requested.
 } # End of RESTART_LOOP
