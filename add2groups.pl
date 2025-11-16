@@ -1,24 +1,31 @@
 #!/usr/bin/perl
 # add2groups.pl
 #
-# DESCRIPTION:
-# This script automates the process of posting photos from specific Flickr sets 
-# (matched by a regex pattern) to eligible Flickr groups, managing group limits, 
-# cooldowns, and moderated status for robust, continuous operation.
+# PURPOSE:
+# Automated Flickr group posting system that intelligently shares photos from matching photosets
+# to eligible groups while respecting rate limits, moderation queues, and cooldown periods.
 #
-# KEY RELIABILITY FEATURES:
-# - **MASTER RESTART LOOP:** Uses an eval/while loop with exponential backoff for complete self-healing 
-#   against fatal errors (network failures, unhandled exceptions). Runs infinitely until external interruption.
-# - **Robust API Wrapper:** `flickr_api_call` includes retry logic and exponential backoff for transient network issues.
-# - **File Locking (flock):** Guarantees file integrity for history and cache files during read/write operations.
-# - **Dynamic Cooldowns:** Tracks history for rate-limited groups and moderated groups to prevent spamming.
+# CORE FUNCTIONALITY:
+# - Matches photosets using regex patterns
+# - Filters groups based on permissions and user patterns  
+# - Implements comprehensive cooldown system for moderated/rate-limited groups
+# - Self-healing design with exponential backoff for API failures
+# - Persistent history tracking across script restarts
+#
+# RELIABILITY FEATURES:
+# - **MASTER RESTART LOOP:** Infinite self-healing loop with exponential backoff for fatal errors
+# - **Robust API Wrapper:** Retry logic with exponential backoff for transient network issues
+# - **File Locking (flock):** Prevents corruption of history and cache files during concurrent access
+# - **Dynamic Cooldowns:** Smart tracking of rate-limited and moderated groups to prevent spam
+# - **Multi-level Random Selection:** Efficient photo selection across sets, pages, and photos
 #
 # USAGE:
 # perl add2groups.pl -f groups.json -H history.json -s "Set Title Pattern" -a 2
 #
-# REQUIREMENTS:
-# - Perl environment with modules: Flickr::API, Data::Dumper, JSON, Time::Local, Time::HiRes, Fcntl.
-# - Authentication tokens stored in '$ENV{HOME}/saved-flickr.st'.
+# CRITICAL DEPENDENCIES:
+# - Flickr::API, JSON, Time::HiRes, Fcntl modules
+# - Flickr authentication tokens in '$ENV{HOME}/saved-flickr.st'
+# - Write permissions for groups.json and history.json files
 
 use strict;
 use warnings;
@@ -80,22 +87,27 @@ GetOptions(
 );
 
 # --- Constants ---
-use constant GROUP_UPDATE_INTERVAL  => 24 * 60 * 60;  # Time until group cache is considered stale (24 hours)
-use constant GROUP_EXHAUSTED_DELAY  => 60 * 60;       # 1 hour wait when no eligible groups remain
-use constant MODERATED_POST_TIMEOUT => 24 * 60 * 60;  # Cooldown period for a moderated group post (24 hours)
+# Group cache management
+use constant GROUP_UPDATE_INTERVAL  => 24 * 60 * 60;  # Refresh group data every 24 hours
+use constant GROUP_EXHAUSTED_DELAY  => 60 * 60;       # 1 hour pause when no eligible groups remain
+
+# Cooldown periods
+use constant MODERATED_POST_TIMEOUT => 24 * 60 * 60;  # 24-hour wait after posting to moderated groups
+
+# Time constants for rate limit calculations
 use constant SECONDS_IN_DAY   => 24 * 60 * 60;
 use constant SECONDS_IN_WEEK  => 7 * SECONDS_IN_DAY;
 use constant SECONDS_IN_MONTH => 30 * SECONDS_IN_DAY;
 
-# API Retry Constants
-use constant MAX_API_RETRIES      => 5;   # Max attempts for transient Flickr API errors
-use constant API_RETRY_MULTIPLIER => 8;   # Exponential backoff factor (e.g., 1, 8, 64, ...)
+# API Error Handling
+use constant MAX_API_RETRIES      => 5;   # Maximum retry attempts for transient API errors
+use constant API_RETRY_MULTIPLIER => 8;   # Backoff multiplier: 1, 8, 64, 512, 4096 seconds
 
-# Master Restart Constants
-use constant MAX_RESTART_DELAY    => 24 * 60 * 60; # Maximum restart delay for fatal script errors
-use constant RESTART_RETRY_BASE   => 60;           # Base delay in seconds (1 minute) for the first retry
-use constant RESTART_RETRY_FACTOR => 2;            # Exponential factor for increasing restart delays
-use constant MAX_TRIES => 20;                      # Max attempts to find a valid photo/group combination per cycle
+# Master Restart System (Self-healing)
+use constant MAX_RESTART_DELAY    => 24 * 60 * 60; # Cap restart delays at 24 hours
+use constant RESTART_RETRY_BASE   => 60;           # Start with 1 minute delays
+use constant RESTART_RETRY_FACTOR => 2;            # Double delay after each failure
+use constant MAX_TRIES => 100;                     # Max photo/group combination attempts per cycle
 
 # --- Helper Subroutines ---
 
@@ -107,8 +119,20 @@ sub debug_print {
 }
 
 # Robust Flickr API call wrapper with exponential backoff and retry logic.
-# Handles transient errors, but returns failure for non-retryable errors (e.g., photo limit reached).
-# RETURNS: Response object on success/non-fatal failure, or undef on fatal, unrecoverable API failure.
+# Handles transient errors gracefully but fails hard on permanent errors.
+#
+# SPECIAL BEHAVIORS:
+# - Treats "Pending Queue" errors as success for moderated groups
+# - Respects photo limit errors as non-retryable conditions
+# - Implements progressive backoff: 1, 8, 64, 512, 4096 second delays
+#
+# PARAMETERS:
+#   $method - Flickr API method name (e.g., 'flickr.groups.pools.add')
+#   $args   - Hash reference of API parameters
+#
+# RETURNS:
+#   Response object on success or non-fatal failure
+#   undef on fatal, unrecoverable API failure after all retries
 sub flickr_api_call {
     my ($method, $args) = @_;
     my $retry_delay = 1;
@@ -154,7 +178,14 @@ sub flickr_api_call {
 
 # --- File I/O Utility Subroutines (Non-Fatal & Safe) ---
 
-# General utility to write content to a file with an exclusive lock (LOCK_EX)
+# File I/O with proper locking to prevent corruption during concurrent access
+# Uses exclusive locks (LOCK_EX) for writes, shared locks (LOCK_SH) for reads
+#
+# SECURITY NOTE: These routines are non-fatal - they warn but don't die on errors
+# to ensure the main script can continue operation even with file issues.
+
+# Writes content to file with exclusive lock to prevent concurrent modifications
+# RETURNS: 1 on success, undef on failure (with warning message)
 sub _write_file {
     my ($file_path, $content) = @_;
     my $fh; 
@@ -187,7 +218,8 @@ sub _write_file {
     return 1;
 }
 
-# General utility to read content from a file with a shared lock (LOCK_SH)
+# Reads entire file content with shared lock allowing concurrent readers
+# RETURNS: File content as string, undef if file missing or read fails
 sub _read_file {
     my $file_path = shift;
     my $fh; 
@@ -325,8 +357,14 @@ sub init_flickr {
     return 1;
 }
 
-# Filters the master list of groups based on static API permission and user-defined patterns.
-# Note: Dynamic limits (throttles/cooldowns) are checked later in the main loop.
+# Comprehensive group filtering pipeline:
+# 1. Static API permissions (can_post flag)
+# 2. Persistent exclusion markers (from JSON cache)
+# 3. Positive pattern matching (-g/--group-pattern)
+# 4. Negative pattern exclusion (-e/--exclude-pattern)
+#
+# NOTE: Dynamic factors (cooldowns, rate limits) are applied later
+# during the main posting cycle, not in this initial filter.
 sub filter_eligible_groups {
     my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
     return [ grep {
@@ -446,9 +484,16 @@ sub check_posting_status {
     };
 }
 
-# Finds a random photo from matching photosets that meets the age requirement
-# and is not already in the group (implicitly checked later).
-# Uses a three-level nested loop structure for efficient random selection.
+# Three-level random selection algorithm for efficient photo discovery:
+# 1. SET_LOOP: Random set selection without replacement
+# 2. PAGE_LOOP: Random page selection within chosen set  
+# 3. PHOTO_LOOP: Random photo selection on chosen page
+#
+# ADVANTAGES:
+# - Uniform distribution across all available photos
+# - No memory overhead for large collections
+# - Graceful degradation as options are exhausted
+# - Automatic age filtering integrated into selection
 sub find_random_photo {
     my ($sets_ref) = @_;
     my $PHOTOS_PER_PAGE = 250;
@@ -615,7 +660,24 @@ sub list_groups_report {
 }
 
 
-# --- Main Logic Execution ---
+# --- MAIN EXECUTION FLOW ---
+# 1. Command-line validation and pattern compilation
+# 2. List-groups mode handling (early exit path)
+# 3. MASTER RESTART LOOP (infinite self-healing wrapper)
+#    3.1 Flickr API initialization and authentication
+#    3.2 Group data loading/refreshing with caching
+#    3.3 Photoset matching and filtering
+#    3.4 History loading for cooldown tracking
+#    3.5 POST_CYCLE_LOOP (continuous posting engine)
+#        3.5.1 Group cache staleness check and refresh
+#        3.5.2 POST_ATTEMPT_LOOP (group/photo selection)
+#              3.5.2.1 Random group selection with safety checks
+#              3.5.2.2 Dynamic cooldown validation (5 checks)
+#              3.5.2.3 Photo selection with age validation
+#              3.5.2.4 Duplicate photo detection
+#              3.5.2.5 Actual API posting with error handling
+#        3.5.3 Inter-post delays with randomization
+# 4. Exponential backoff and restart on fatal errors
 
 # 1. Initial setup and validation
 if ($help || !$groups_file || !$history_file || (!$list_groups && !$set_pattern)) {
@@ -628,7 +690,7 @@ my $group_match_rx = eval { qr/$group_pattern/i } if defined $group_pattern;
 die "Invalid group pattern '$group_pattern': $@" if $@;
 my $exclude_match_rx = eval { qr/$exclude_pattern/i } if defined $exclude_pattern;
 die "Invalid exclude pattern '$exclude_pattern': $@" if $@;
-eval { qr/$set_pattern/ };
+eval { qr/$set_pattern/ } if defined $set_pattern;
 die "Invalid set pattern '$set_pattern': $@" if $@;
 
 my $force_refresh = $clean_excludes || $persistent_exclude;
@@ -647,7 +709,14 @@ if ($list_groups) {
 }
 
 # --- MASTER RESTART LOOP (Self-Healing Core) ---
-# This loop handles all fatal script errors and restarts the entire process indefinitely.
+# This loop provides complete fault tolerance by wrapping the entire script
+# in an infinite restart mechanism with exponential backoff.
+#
+# DESIGN PHILOSOPHY:
+# - No fatal error can permanently stop the script
+# - Progressive delays prevent overwhelming systems during outages
+# - All persistent state is saved and restored across restarts
+# - Randomization prevents thundering herd problems
 my $restart_attempt = 0;
 
 RESTART_LOOP: while (1) {
@@ -748,6 +817,14 @@ RESTART_LOOP: while (1) {
 
                 my $group_id = $selected_group->{id};
                 my $group_name = $selected_group->{name};
+                
+                # --- DYNAMIC CHECK SYSTEM ---
+                # Five-layer validation ensures we only post to appropriate groups:
+                # 1. Rate Limit Cooldown: Internal tracking of API-imposed limits
+                # 2. Moderated Cooldown: Prevents spamming groups with approval queues  
+                # 3. Real-time API Status: Fresh throttle data from Flickr
+                # 4. Last Poster Check: Avoids back-to-back posts in same group
+                # 5. Photo Context Check: Prevents duplicate posts
                 
                 # --- DYNAMIC CHECK 1: Rate Limit Cooldown Check ---
                 # Check internal history for groups temporarily rate-limited due to API errors or limits.
@@ -907,7 +984,7 @@ RESTART_LOOP: while (1) {
                             save_history();
                         }
                         
-                        last POST_ATTEMPT_LOOP; # Exit the inner loop on non-fatal error
+                        next POST_ATTEMPT_LOOP; # try again on non-fatal error
                     }
                 }
             } # End of POST_ATTEMPT_LOOP
@@ -920,7 +997,24 @@ RESTART_LOOP: while (1) {
         } # End of POST_CYCLE_LOOP
     }; # End of eval block
     
-    # --- Error Handling and Exponential Backoff (After eval) ---
+    # --- ERROR RECOVERY STRATEGY ---
+    # The script employs a graduated response to different error types:
+    #
+    # TRANSIENT API ERRORS (Network timeouts, rate limits):
+    #   - Exponential backoff with max 5 retries
+    #   - Progressive delays: 1, 8, 64, 512, 4096 seconds
+    #
+    # NON-FATAL FLICKR ERRORS (Photo limits, closed groups):
+    #   - Single attempt with appropriate cooldown
+    #   - Continue with next group/photo combination
+    #
+    # FATAL SCRIPT ERRORS (Authentication, missing files):
+    #   - Master restart with exponential backoff
+    #   - State preservation through file-based history
+    #   - Capped maximum delay of 24 hours
+    #
+    # This ensures robust 24/7 operation with minimal manual intervention.
+    
     my $fatal_error = $@;
 
     if ($fatal_error) {
