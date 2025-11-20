@@ -21,6 +21,7 @@
 #
 # USAGE:
 # perl add2groups.pl -f groups.json -H history.json -s "Set Title Pattern" -a 2
+# perl add2groups.pl -l -f groups.json  <-- Modo de listagem simplificado
 #
 # CRITICAL DEPENDENCIES:
 # - Flickr::API, JSON, Time::HiRes, Fcntl modules
@@ -37,36 +38,34 @@ use Data::Dumper;
 use JSON;
 use Time::Local;
 use Time::HiRes qw(sleep);
-use Fcntl qw(:flock); # Required for file locking constants (LOCK_EX, LOCK_SH, LOCK_UN)
-use feature 'say';    # Enables 'say' function for cleaner, newline-terminated output to STDOUT
+use Fcntl qw(:flock); 
+use feature 'say';    
 
 # Set output record separator to always print a newline
 $\ = "\n";
 
 # --- OUTPUT BUFFERING FIX ---
-# Disable output buffering on STDOUT and STDERR for immediate logging.
 $| = 1;
 select(STDERR); $| = 1; select(STDOUT);
 
 # Global API and User Variables
-my $flickr;                # Flickr::API object instance for all calls
-my $user_nsid;             # Current authenticated user's Flickr NSID
-my $debug;                 # Debug level (0: off, 1: info, 2: call/response, 3+: Dumper output)
-my $max_age_timestamp;     # Unix timestamp for the oldest photo date allowed
-my @all_eligible_groups;   # Stores groups passing static filters (patterns, permissions)
-my @matching_sets;         # Stores photosets matching the user-defined pattern
+my $flickr;                
+my $user_nsid;             
+my $debug;                 
+my $max_age_timestamp;     
+my @all_eligible_groups;   
+my @matching_sets;         
 
 
 # --- Command-line options and defaults ---
 my ($help, $dry_run, $groups_file, $set_pattern, $group_pattern, $exclude_pattern, $max_age_years, $timeout_max);
 my ($persistent_exclude, $clean_excludes, $ignore_excludes, $list_groups, $history_file);
 
-# Default maximum random pause between successful posts
 $timeout_max = 300;
 
-# Global history hashes for internal cooldowns, loaded/saved from history_file
-my %moderated_post_history; # Tracks posts to moderated groups waiting for acceptance
-my %rate_limit_history;     # Tracks groups placed on dynamic cooldown based on limits or temporary API errors
+# Global history hashes
+my %moderated_post_history; 
+my %rate_limit_history;     
 
 # Process command-line options
 GetOptions(
@@ -87,127 +86,94 @@ GetOptions(
 );
 
 # --- Constants ---
-# Group cache management
-use constant GROUP_UPDATE_INTERVAL  => 24 * 60 * 60;  # Refresh group data every 24 hours
-use constant GROUP_EXHAUSTED_DELAY  => 60 * 60;       # 1 hour pause when no eligible groups remain
+use constant GROUP_UPDATE_INTERVAL  => 24 * 60 * 60;  # Time until group list is considered stale (1 day)
+use constant GROUP_EXHAUSTED_DELAY  => 60 * 60;       # Delay if no groups are eligible (1 hour)
 
-# Cooldown periods
-use constant MODERATED_POST_TIMEOUT => 24 * 60 * 60;  # 24-hour wait after posting to moderated groups
+use constant MODERATED_POST_TIMEOUT => 24 * 60 * 60; # Cooldown for a moderated group before checking if photo is visible (1 day)
 
-# Time constants for rate limit calculations
 use constant SECONDS_IN_DAY   => 24 * 60 * 60;
 use constant SECONDS_IN_WEEK  => 7 * SECONDS_IN_DAY;
 use constant SECONDS_IN_MONTH => 30 * SECONDS_IN_DAY;
 
-# API Error Handling
-use constant MAX_API_RETRIES      => 5;   # Maximum retry attempts for transient API errors
-use constant API_RETRY_MULTIPLIER => 8;   # Backoff multiplier: 1, 8, 64, 512, 4096 seconds
+use constant MAX_API_RETRIES      => 5;   # Max attempts for transient API calls
+use constant API_RETRY_MULTIPLIER => 8;   # Delay multiplier for API retries (1, 8, 64, ...)
 
-# Master Restart System (Self-healing)
-use constant MAX_RESTART_DELAY    => 24 * 60 * 60; # Cap restart delays at 24 hours
-use constant RESTART_RETRY_BASE   => 60;           # Start with 1 minute delays
-use constant RESTART_RETRY_FACTOR => 2;            # Double delay after each failure
-use constant MAX_TRIES => 100;                     # Max photo/group combination attempts per cycle
+use constant MAX_RESTART_DELAY    => 24 * 60 * 60; # Maximum delay for the master restart loop (24 hours)
+use constant RESTART_RETRY_BASE   => 60;           # Initial delay for master restart (60 seconds)
+use constant RESTART_RETRY_FACTOR => 2;            # Multiplier for master restart delay
+use constant MAX_TRIES => 100;                     # Max attempts to find a group/photo combo in a cycle
 
 # --- Helper Subroutines ---
 
-# Debug printing utility, outputting Data::Dumper dump for high debug levels
 sub debug_print {
     return unless defined $debug;
     my ($message, $data) = @_;
     say "Debug: $message" . (defined $data && $debug > 2 ? Dumper($data) : '');
 }
 
-# Robust Flickr API call wrapper with exponential backoff and retry logic.
-# Handles transient errors gracefully but fails hard on permanent errors.
-#
-# SPECIAL BEHAVIORS:
-# - Treats "Pending Queue" errors as success for moderated groups
-# - Respects photo limit errors as non-retryable conditions
-# - Implements progressive backoff: 1, 8, 64, 512, 4096 second delays
-#
-# PARAMETERS:
-#   $method - Flickr API method name (e.g., 'flickr.groups.pools.add')
-#   $args   - Hash reference of API parameters
-#
-# RETURNS:
-#   Response object on success or non-fatal failure
-#   undef on fatal, unrecoverable API failure after all retries
 sub flickr_api_call {
     my ($method, $args) = @_;
     my $retry_delay = 1;
 
     say "Debug: API CALL: $method" if defined $debug and $debug > 0;
 
-    # Loop for a fixed number of retries for transient errors
     for my $attempt (1 .. MAX_API_RETRIES) {
         my $response = eval { $flickr->execute_method($method, $args) };
 
-        # Check for Perl exception ($@), undef response, or Flickr API failure
         if ($@ || !defined $response || !$response->{success}) {
             
             my $error = $response->{error_message} || $@ || 'Unknown error';
-            warn "Attempt $attempt failed for $method: $error"; # Use warn for actual errors to STDERR
+            warn "Attempt $attempt failed for $method: $error"; 
 
-            # Treat "Pending Queue" for 'add' as a successful, non-retryable status
+            # Special case: Moderated groups often return an "error" but the post is accepted into the queue
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Pending Queue for this Pool/i) {
                 say "Debug: Moderated Group Success Detected: $error. Treating as successful and non-retryable." if defined $debug;
-                return $response; 
+                return $response; # Success via moderation queue
             }
 
-            # Check for non-retryable, permanent errors specific to 'add' method (e.g., limit reached).
+            # Special case: Group is full/limit reached (non-retryable error, requires cooldown/manual intervention)
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Photo limit reached/i) {
                 warn "Warning: Non-retryable Error detected for $method: $error. Aborting retries.";
-                return $response; # Return failure response object for handling
+                return $response; # Failure, but known and handled later
             }
 
-            # If max retries reached, fail fatally for the script (return undef)
             if ($attempt == MAX_API_RETRIES) {
                 warn "FATAL: Failed to execute $method after " . MAX_API_RETRIES . " attempts: $error";
-                return undef; 
+                return undef; # Fatal API failure
             }
-            # Exponential backoff: sleep and increase delay
+            # Apply exponential backoff
             sleep $retry_delay;
             $retry_delay *= API_RETRY_MULTIPLIER;
             next;
         }
-        return $response; # API call was successful
+        return $response; # API call successful
     }
-    return undef; 
+    return undef; # Should be unreachable if last attempt returns undef on error
 }
 
 # --- File I/O Utility Subroutines (Non-Fatal & Safe) ---
 
-# File I/O with proper locking to prevent corruption during concurrent access
-# Uses exclusive locks (LOCK_EX) for writes, shared locks (LOCK_SH) for reads
-#
-# SECURITY NOTE: These routines are non-fatal - they warn but don't die on errors
-# to ensure the main script can continue operation even with file issues.
-
-# Writes content to file with exclusive lock to prevent concurrent modifications
-# RETURNS: 1 on success, undef on failure (with warning message)
 sub _write_file {
     my ($file_path, $content) = @_;
     my $fh; 
 
     unless (open $fh, '>:encoding(UTF-8)', $file_path) {
-        warn "Warning: Cannot open $file_path for writing: $!"; # Report file open error
+        warn "Warning: Cannot open $file_path for writing: $!"; 
         return undef;
     }
 
-    # Acquire an exclusive lock (blocks other processes from reading or writing)
+    # Acquire exclusive lock
     unless (flock($fh, LOCK_EX)) {
         warn "Warning: Failed to acquire exclusive lock on $file_path. Skipping write.";
         close $fh;
         return undef;
     }
 
-    # Use eval block to catch potential print errors
     eval {
         print $fh $content;
     };
     
-    flock($fh, LOCK_UN); # Release the lock
+    flock($fh, LOCK_UN); # Release lock
     close $fh;
 
     if ($@) {
@@ -218,8 +184,6 @@ sub _write_file {
     return 1;
 }
 
-# Reads entire file content with shared lock allowing concurrent readers
-# RETURNS: File content as string, undef if file missing or read fails
 sub _read_file {
     my $file_path = shift;
     my $fh; 
@@ -228,21 +192,20 @@ sub _read_file {
     say "Debug: Accessing file $file_path" if defined $debug;
 
     unless (open $fh, '<:encoding(UTF-8)', $file_path) {
-        warn "Warning: Cannot open $file_path for reading: $!"; # Report file open error
+        warn "Warning: Cannot open $file_path for reading: $!"; 
         return undef;
     }
 
-    # Acquire a shared lock (allows other readers but prevents writers)
+    # Acquire shared lock
     unless (flock($fh, LOCK_SH)) {
         say "Debug: Failed to acquire shared lock on $file_path. Skipping read." if defined $debug;
         close $fh;
         return undef;
     }
 
-    # Slurp the entire file content
     my $content = eval { local $/; <$fh> };
 
-    flock($fh, LOCK_UN); # Release the lock
+    flock($fh, LOCK_UN); # Release lock
     close $fh;
 
     if ($@) {
@@ -255,7 +218,6 @@ sub _read_file {
 
 # --- High-Level File I/O Subroutines ---
 
-# Serializes the groups array reference to JSON and saves it to the groups file.
 sub save_groups {
     my $groups_ref = shift;
     my $json = JSON->new->utf8->pretty->encode({ groups => $groups_ref });
@@ -267,8 +229,6 @@ sub save_groups {
     return 1;
 }
 
-# Loads and decodes groups data from the JSON cache file.
-# RETURNS: Array reference of cached groups or undef on failure/file absence.
 sub load_groups {
     say "Debug: Loading groups from $groups_file" if defined $debug;
     my $json_text = _read_file($groups_file) or return undef;
@@ -280,8 +240,10 @@ sub load_groups {
     return $data->{groups} // [];
 }
 
-# Saves the current state of dynamic cooldown history hashes to the history file.
 sub save_history {
+    # Só salva se $history_file estiver definido (necessário apenas para modo de postagem)
+    return unless defined $history_file; 
+    
     my $data_to_write = {
         moderated => \%moderated_post_history,
         ratelimit => \%rate_limit_history,
@@ -296,8 +258,10 @@ sub save_history {
     return 1;
 }
 
-# Loads cooldown history from the JSON file into global hashes.
 sub load_history {
+    # Só carrega se $history_file estiver definido (necessário apenas para modo de postagem)
+    return unless defined $history_file; 
+    
     say "Debug: Loading history from $history_file" if defined $debug;
     my $json_text = _read_file($history_file) or return;
     my $data = eval { decode_json($json_text) };
@@ -305,7 +269,6 @@ sub load_history {
            warn "Error decoding JSON from $history_file: $@. Cannot load history data." if defined $debug;
            return;
     }
-    # Populate global hashes from loaded data
     %moderated_post_history = %{$data->{moderated} // {}};
     %rate_limit_history     = %{$data->{ratelimit} // {}};
     say "Debug: History loaded. Moderated count: " . scalar(keys %moderated_post_history) . ", Rate limit count: " . scalar(keys %rate_limit_history) if defined $debug;
@@ -313,16 +276,15 @@ sub load_history {
 
 # --- Main Logic Subroutines ---
 
-# Display comprehensive usage information
 sub show_usage {
     print "Usage: $0 [OPTIONS]";
     print "Options:";
     printf "  %-20s %s\n", "-h, --help", "Show help message and exit";
     printf "  %-20s %s\n", "-n, --dry-run", "Simulate adding without making changes (highly recommended for testing)";
     printf "  %-20s %s\n", "-d, --debug", "Set debug level. Prints verbose execution info (0-3)";
-    printf "  %-20s %s\n", "-f, --groups-file", "Path to store/read group JSON data (required for cache)";
-    printf "  %-20s %s\n", "-H, --history-file", "Path to store/read dynamic cooldown history (required)";
-    printf "  %-20s %s\n", "-s, --set-pattern", "Regex pattern to match set titles (required, unless -l is used)";
+    printf "  %-20s %s\n", "-f, --groups-file", "Path to store/read group JSON data (Required for ALL modes)";
+    printf "  %-20s %s\n", "-H, --history-file", "Path to store/read dynamic cooldown history (Required for posting mode)";
+    printf "  %-20s %s\n", "-s, --set-pattern", "Regex pattern to match set titles (Required for posting mode)";
     printf "  %-20s %s\n", "-g, --group-pattern", "Regex pattern to match target group names (optional filter)";
     printf "  %-20s %s\n", "-e, --exclude", "Negative regex pattern to exclude group names (optional filter)";
     printf "  %-20s %s\n", "-p, --persistent", "If -e matches, permanently mark group as excluded in JSON cache";
@@ -334,65 +296,47 @@ sub show_usage {
     print "\nNOTE: Requires authentication tokens in '\$ENV{HOME}/saved-flickr.st'";
 }
 
-# Initializes the Flickr API connection and authenticates the user.
+sub filter_eligible_groups {
+    my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
+    return [ grep {
+        my $g = $_;
+        my $gname = $g->{name} || '';
+        # Check static permissions/filters
+        $g->{can_post} == 1 &&
+        ( $ignore_excludes || !defined $g->{excluded} ) &&
+        ( !defined $group_match_rx || $gname =~ $group_match_rx ) &&
+        ( !defined $exclude_match_rx || $gname !~ $exclude_match_rx )
+    } @$groups_ref ];
+}
+
 sub init_flickr {
-    # Calculate the oldest allowable photo timestamp based on max_age_years
     if (defined $max_age_years) {
         $max_age_timestamp = time() - ($max_age_years * 365 * 24 * 60 * 60);
     }
     my $config_file = "$ENV{HOME}/saved-flickr.st";
     $flickr = Flickr::API->import_storable_config($config_file);
     
-    # Test connection and authentication
     my $response = flickr_api_call('flickr.test.login', {}); 
     
-    unless (defined $response) {
-        # This 'die' is caught by the master RESTART_LOOP
+    unless (defined $response) { # Changed: if (!defined $response)
         die "FATAL: Initial Flickr connection (flickr.test.login) failed after retries.";
     }
     
-    # Extract the user NSID for subsequent calls
     $user_nsid = $response->as_hash->{user}->{id};
     say "Debug: Logged in as $user_nsid" if defined $debug;
     return 1;
 }
 
-# Comprehensive group filtering pipeline:
-# 1. Static API permissions (can_post flag)
-# 2. Persistent exclusion markers (from JSON cache)
-# 3. Positive pattern matching (-g/--group-pattern)
-# 4. Negative pattern exclusion (-e/--exclude-pattern)
-#
-# NOTE: Dynamic factors (cooldowns, rate limits) are applied later
-# during the main posting cycle, not in this initial filter.
-sub filter_eligible_groups {
-    my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
-    return [ grep {
-        my $g = $_;
-        my $gname = $g->{name} || '';
-        # 1. Must have static permission to post photos
-        $g->{can_post} == 1 &&
-        # 2. Must not be persistently excluded (unless --ignore-excludes is set)
-        ( $ignore_excludes || !defined $g->{excluded} ) &&
-        # 3. Must match the user's positive pattern (-g)
-        ( !defined $group_match_rx || $gname =~ $group_match_rx ) &&
-        # 4. Must NOT match the user's negative pattern (-e)
-        ( !defined $exclude_match_rx || $gname !~ $exclude_match_rx )
-    } @$groups_ref ];
-}
-
-# Fetches the latest group membership data from Flickr, combines it with detailed group info,
-# applies persistent exclusion logic, and updates the local JSON cache file.
 sub update_and_store_groups {
     my $old_groups_ref = shift;
+    # Load from file if not provided/empty
     $old_groups_ref = load_groups() // [] unless 'ARRAY' eq ref $old_groups_ref;
     say "Info: Refreshing group list from Flickr API..." if defined $debug;
     
-    # 1. Get list of all groups the user is a member of
     my $response = flickr_api_call('flickr.groups.pools.getGroups', {});
-    unless (defined $response) {
+    unless (defined $response) { # Changed: if (!defined $response)
         warn "Warning: Failed to fetch complete group list from Flickr API. Returning existing cached list.";
-        return $old_groups_ref; 
+        return $old_groups_ref; # Return old cache on API failure
     }
     
     my $new_groups_raw = $response->as_hash->{groups}->{group} || [];
@@ -402,15 +346,14 @@ sub update_and_store_groups {
     my $timestamp_epoch = time();
     my $exclude_rx = qr/($exclude_pattern)/si if defined $exclude_pattern;
     
-    # 2. Iterate through each group to get detailed info and restrictions
+    # Iterate through all fetched groups and update their details one by one
     foreach my $g_raw (@$new_groups_raw) {
         my $gid   = $g_raw->{nsid};
         my $gname = $g_raw->{name};
         my $g_old = $old_groups_map{$gid};
         
-        # Call flickr.groups.getInfo to get throttle and moderation status
         my $response = flickr_api_call('flickr.groups.getInfo', { group_id => $gid });
-        unless (defined $response) {
+        unless (defined $response) { # Changed: if (!defined $response)
             warn "Warning: Failed to fetch info for group '$gname' ($gid). API failed after retries. Skipping this group.";
             next;
         }
@@ -423,7 +366,7 @@ sub update_and_store_groups {
         my $is_moderate_ok    = 0 | $data->{restrictions}->{moderate_ok} // 0;
         my $is_group_moderated = $is_pool_moderated || $is_moderate_ok;
 
-        # Determine static posting permission
+        # Determine posting permissions
         my $photos_ok = 0 | $data->{restrictions}->{photos_ok} // 1;
         my $limit_mode = $throttle->{mode} || 'none';
         my $remaining = $throttle->{remaining} // 0;
@@ -443,11 +386,11 @@ sub update_and_store_groups {
             role          => $g_raw->{admin} ? "admin" : $g_raw->{moderator} ? "moderator" : "member",
         };
         
-        # Preserve old exclusion status unless the user requests a clean
+        # Preserve existing permanent exclusions if any
         $entry->{excluded} = $g_old->{excluded} if $g_old and $g_old->{excluded};
         delete $entry->{excluded} if $clean_excludes;
 
-        # Apply new persistent exclusion if flag is set and pattern matches
+        # Apply new permanent exclusion if requested
         if ($persistent_exclude and defined $exclude_pattern and ($gname =~ $exclude_rx)) {
              $entry->{excluded} = { 
                  pattern => $exclude_pattern, 
@@ -460,12 +403,11 @@ sub update_and_store_groups {
     return \@results;
 }
 
-# Checks the group's real-time posting throttle status (remaining posts).
 sub check_posting_status {
     my ($group_id, $group_name) = @_;
     
     my $response = flickr_api_call('flickr.groups.getInfo', { group_id => $group_id });
-    unless (defined $response) {
+    unless (defined $response) { # Changed: if (!defined $response)
         warn "Warning: Failed to fetch dynamic posting status for group '$group_name'. API failed after retries. Returning safe failure status.";
         return { can_post => 0, limit_mode => 'unknown_error', remaining => 0 };
     }
@@ -475,7 +417,7 @@ sub check_posting_status {
     my $limit_mode = $throttle->{mode} // 'none';
     my $remaining = $throttle->{remaining} // 0;
     
-    # Can post if mode is 'none' (no limits) or if there are remaining posts
+    # Check if we can post dynamically (i.e., not rate-limited out)
     my $can_post_current = ($limit_mode eq 'none') || ($remaining > 0);
     return { 
         can_post => $can_post_current, 
@@ -484,16 +426,6 @@ sub check_posting_status {
     };
 }
 
-# Three-level random selection algorithm for efficient photo discovery:
-# 1. SET_LOOP: Random set selection without replacement
-# 2. PAGE_LOOP: Random page selection within chosen set  
-# 3. PHOTO_LOOP: Random photo selection on chosen page
-#
-# ADVANTAGES:
-# - Uniform distribution across all available photos
-# - No memory overhead for large collections
-# - Graceful degradation as options are exhausted
-# - Automatic age filtering integrated into selection
 sub find_random_photo {
     my ($sets_ref) = @_;
     my $PHOTOS_PER_PAGE = 250;
@@ -502,9 +434,7 @@ sub find_random_photo {
     my %used_pages_by_set;
     my @sets_to_try = @$sets_ref;
     
-    # Outer Loop: Iterate over all matching sets
     SET_LOOP: while (@sets_to_try) {
-        # Select a random set index using standard rand()
         my $set_index = int(rand(@sets_to_try));
         my $selected_set = $sets_to_try[$set_index];
         my $set_id = $selected_set->{id};
@@ -512,24 +442,21 @@ sub find_random_photo {
 
         say "Debug: Selected set: $selected_set->{title} ($set_id)" if defined $debug;
 
-        # Remove the selected set from the list to avoid immediate re-selection
+        # Remove set from the pool to avoid re-selecting it for this cycle
         splice(@sets_to_try, $set_index, 1);
         $used_set_ids{$set_id} = 1;
 
-        # Skip sets with no photos
         next SET_LOOP if $total == 0; 
         
         $used_pages_by_set{$set_id} = {} unless exists $used_pages_by_set{$set_id};
         my $max_page = int(($total - 1) / $PHOTOS_PER_PAGE) + 1;
         my @pages_to_try = (1..$max_page);
 
-        # Middle Loop: Iterate over pages within the current set
         PAGE_LOOP: while (@pages_to_try) {
-            # Select a random page index using standard rand()
             my $page_index = int(rand(@pages_to_try));
             my $random_page = $pages_to_try[$page_index];
             
-            # Remove selected page from list to avoid re-selection
+            # Remove page from the pool to avoid re-selecting it for this set
             splice(@pages_to_try, $page_index, 1);
             $used_pages_by_set{$set_id}->{$random_page} = 1;
 
@@ -537,42 +464,41 @@ sub find_random_photo {
                 photoset_id => $set_id, 
                 per_page => $PHOTOS_PER_PAGE, 
                 page => $random_page,
-                privacy_filter => 1, # Only select public photos
+                privacy_filter => 1, # Only get public photos
                 extras => 'date_taken',
             };
 
             my $response = flickr_api_call('flickr.photosets.getPhotos', $get_photos_params); 
 
-            unless (defined $response) { 
+            unless (defined $response) { # Changed: if (!defined $response)
                 warn "Warning: Failed to fetch photos from set '$selected_set->{title}' ($set_id). API failed after retries. Skipping to next set.";
-                last PAGE_LOOP; # Break middle loop to continue outer SET_LOOP
+                last PAGE_LOOP; # Go to next SET_LOOP iteration
             }
             
             my $photos_on_page = $response->as_hash->{photoset}->{photo} || [];
             $photos_on_page = [ $photos_on_page ] unless ref $photos_on_page eq 'ARRAY';
             
-            unless (@$photos_on_page) { 
+            unless (@$photos_on_page) { # Changed: if (!@$photos_on_page)
                 say "Debug: Page $random_page returned no public photos." if defined $debug;
-                next PAGE_LOOP; # Continue middle loop
+                next PAGE_LOOP; 
             }
 
             my @photo_indices_to_try = (0..$#{$photos_on_page});
             
-            # Inner Loop: Iterate over photos on the current page
             PHOTO_LOOP: while (@photo_indices_to_try) {
-                # Select a random photo index using standard rand()
                 my $index_to_try = int(rand(@photo_indices_to_try));
                 my $random_photo_index = $photo_indices_to_try[$index_to_try];
                 my $selected_photo = $photos_on_page->[$random_photo_index];
                 
+                # Remove photo index to avoid re-selecting it for this page
                 splice(@photo_indices_to_try, $index_to_try, 1);
                 
-                # Check photo age requirement if max_age_years is set
+                # Filter by max age if required
                 if (defined $max_age_timestamp && $selected_photo->{datetaken}) {
                     my $date_taken = $selected_photo->{datetaken};
                     my $photo_timestamp;
                     
-                    # Attempt to parse Flickr date formats
+                    # Attempt to parse date_taken in known formats
                     if ($date_taken =~ /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/) {
                         $photo_timestamp = Time::Local::timelocal($6, $5, $4, $3, $2-1, $1-1900);
                     } 
@@ -582,15 +508,15 @@ sub find_random_photo {
 
                     if (defined $photo_timestamp && $photo_timestamp < $max_age_timestamp) {
                         say "Debug: Photo '$selected_photo->{title}' ($selected_photo->{id}) is too old. Retrying photo." if defined $debug;
-                        next PHOTO_LOOP; # Continue inner loop
+                        next PHOTO_LOOP; 
                     }
                 }
 
-                # Found a suitable photo that meets age and public status requirements
+                # Found a suitable photo
                 return {
                     id => $selected_photo->{id},
-                    title => $selected_photo->{title} // 'Untitled Photo',
-                    set_title => $selected_set->{title} // 'Untitled Set',
+                    title => $selected_photo->{title} || 'Untitled Photo',
+                    set_title => $selected_set->{title} || 'Untitled Set',
                     set_id => $set_id,
                 };
             }
@@ -601,13 +527,12 @@ sub find_random_photo {
     return;
 }
 
-# Checks if a photo is already in the group by examining its contexts (where it has been posted).
-# RETURNS: 1 if present, 0 if not present, undef if API call fails.
 sub is_photo_in_group {
     my ($photo_id, $group_id) = @_;
     
+    # Use getAllContexts to check if the photo is already in the target group pool
     my $response = flickr_api_call('flickr.photos.getAllContexts', { photo_id => $photo_id });
-    unless (defined $response) {
+    unless (defined $response) { # Changed: if (!defined $response)
         warn "Warning: Failed to check photo context for photo $photo_id. API failed after retries. Returning undef to signal temporary failure.";
         return undef;
     }
@@ -615,10 +540,9 @@ sub is_photo_in_group {
     my $photo_pools = $response->as_hash->{pool} || [];
     $photo_pools = [ $photo_pools ] unless ref $photo_pools eq 'ARRAY';
     my $is_present = grep { $_->{id} eq $group_id } @$photo_pools;
-    return $is_present; 
+    return $is_present; # 1 if present, 0 otherwise
 }
 
-# Generates a formatted summary table of all groups and their eligibility status.
 sub list_groups_report {
     my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
     print "\n### Group Status Report (Data from $groups_file)";
@@ -627,12 +551,10 @@ sub list_groups_report {
     my @eligible = @{ filter_eligible_groups($groups_ref, $group_match_rx, $exclude_match_rx) };
     my %eligible_map = map { $_->{id} => 1 } @eligible;
     
-    # Print table header
     printf "%-40s | %-12s | %-12s | %-8s | %-12s | %s\n", 
         "**Group Name**", "**Can Post**", "**Limit Mode**", "**Remain**", "**Moderated**", "**Exclusion/Filter Status**";
     print "-" x 111;
 
-    # Iterate and print each group's status
     foreach my $g (sort { $a->{name} cmp $b->{name} } @$groups_ref) {
         my $status;
         if (exists $eligible_map{$g->{id}}) {
@@ -661,90 +583,94 @@ sub list_groups_report {
 
 
 # --- MAIN EXECUTION FLOW ---
-# 1. Command-line validation and pattern compilation
-# 2. List-groups mode handling (early exit path)
-# 3. MASTER RESTART LOOP (infinite self-healing wrapper)
-#    3.1 Flickr API initialization and authentication
-#    3.2 Group data loading/refreshing with caching
-#    3.3 Photoset matching and filtering
-#    3.4 History loading for cooldown tracking
-#    3.5 POST_CYCLE_LOOP (continuous posting engine)
-#        3.5.1 Group cache staleness check and refresh
-#        3.5.2 POST_ATTEMPT_LOOP (group/photo selection)
-#              3.5.2.1 Random group selection with safety checks
-#              3.5.2.2 Dynamic cooldown validation (5 checks)
-#              3.5.2.3 Photo selection with age validation
-#              3.5.2.4 Duplicate photo detection
-#              3.5.2.5 Actual API posting with error handling
-#        3.5.3 Inter-post delays with randomization
-# 4. Exponential backoff and restart on fatal errors
 
-# 1. Initial setup and validation
-if ($help || !$groups_file || !$history_file || (!$list_groups && !$set_pattern)) {
+my @missing_params;
+
+if ($help) {
     show_usage();
     exit;
 }
+
+# 1. Check required parameters for ALL modes
+unless ($groups_file) { # Changed: if (!$groups_file)
+    push @missing_params, "-f (groups-file)";
+}
+
+# 2. Check required parameters for POSTING mode (when -l is NOT present)
+unless ($list_groups) { # Changed: if (!$list_groups)
+    unless ($history_file) { # Changed: if (!$history_file)
+        push @missing_params, "-H (history-file)";
+    }
+    unless ($set_pattern) { # Changed: if (!$set_pattern)
+        push @missing_params, "-s (set-pattern)";
+    }
+}
+
+# Output specific error message if any parameters are missing
+if (@missing_params) {
+    print "ERRO FATAL: Os seguintes parâmetros obrigatórios estão em falta ou inválidos:";
+    print "  " . join("\n  ", @missing_params);
+    print "---";
+    show_usage();
+    exit 1; # Exit with error status
+}
+
 
 # Compile and validate user-provided regex patterns
 my $group_match_rx = eval { qr/$group_pattern/i } if defined $group_pattern;
 die "Invalid group pattern '$group_pattern': $@" if $@;
 my $exclude_match_rx = eval { qr/$exclude_pattern/i } if defined $exclude_pattern;
 die "Invalid exclude pattern '$exclude_pattern': $@" if $@;
-eval { qr/$set_pattern/ } if defined $set_pattern;
-die "Invalid set pattern '$set_pattern': $@" if $@;
+# Only validate set pattern if it's required (i.e., not listing)
+unless ($list_groups) { # Changed: if (!$list_groups)
+    eval { qr/$set_pattern/ } if defined $set_pattern;
+    die "Invalid set pattern '$set_pattern': $@" if $@;
+}
 
 my $force_refresh = $clean_excludes || $persistent_exclude;
 
-# Handle list-groups mode (this is the only way the script exits intentionally)
+# Handle list-groups mode (early exit)
 if ($list_groups) {
     unless (init_flickr()) {
         die "FATAL: Initial Flickr connection failed. Cannot proceed.";
     }
     my $groups_list_ref = load_groups();
-    # Refresh cache if forced or if cache is missing/empty/stale
-    $groups_list_ref = update_and_store_groups($groups_list_ref) if $force_refresh or !defined $groups_list_ref or !@$groups_list_ref;
+    # Refresh cache if forced, if cache doesn't exist, or if cache is empty
+    $groups_list_ref = update_and_store_groups($groups_list_ref) unless defined $groups_list_ref and !@$groups_list_ref;
     die "Cannot list groups: Could not load or fetch group list." unless defined $groups_list_ref and @$groups_list_ref;
     list_groups_report($groups_list_ref, $group_match_rx, $exclude_match_rx);
     exit;
 }
 
 # --- MASTER RESTART LOOP (Self-Healing Core) ---
-# This loop provides complete fault tolerance by wrapping the entire script
-# in an infinite restart mechanism with exponential backoff.
-#
-# DESIGN PHILOSOPHY:
-# - No fatal error can permanently stop the script
-# - Progressive delays prevent overwhelming systems during outages
-# - All persistent state is saved and restored across restarts
-# - Randomization prevents thundering herd problems
 my $restart_attempt = 0;
 
 RESTART_LOOP: while (1) {
     $restart_attempt++;
 
     eval {
-        warn "\n--- Starting main script execution attempt #$restart_attempt ---\n" if $restart_attempt > 1; # Use warn for master loop start to STDERR
+        warn "\n--- Starting main script execution attempt #$restart_attempt ---\n" if $restart_attempt > 1; 
         
-        # 2. Initialization and Group/Set Fetch
-        unless (init_flickr()) {
-            # This 'die' is caught by the master RESTART_LOOP
+        # 1. Initialization and Setup
+        unless (init_flickr()) { # Changed: if (!init_flickr())
+            # This should trigger the fatal error handling if it fails after retries in init_flickr's dependency
             die "FATAL: Initial Flickr connection (flickr.test.login) failed after retries.";
         }
         
-        # Load cached groups and update from API if cache is empty or stale based on flags
+        # Load/update group list cache
         my $groups_list_ref = load_groups();
         $groups_list_ref = update_and_store_groups($groups_list_ref) unless defined $groups_list_ref and !@$groups_list_ref;
 
-        # Apply static filtering (can_post, persistent excludes, user patterns)
+        # Apply user filters
         @all_eligible_groups = @{ filter_eligible_groups($groups_list_ref, $group_match_rx, $exclude_match_rx) };
         unless (@all_eligible_groups) {
             die "No groups match all required filters.";
         }
         say "Info: Found " . scalar(@all_eligible_groups) . " groups eligible for posting after initial filter." if defined $debug;
 
-        # Get photosets matching the pattern
+        # Fetch and filter photosets
         my $response = flickr_api_call('flickr.photosets.getList', { user_id => $user_nsid }); 
-        unless (defined $response) {
+        unless (defined $response) { # Changed: if (!defined $response)
             die "FATAL: Failed to fetch photoset list from API after retries.";
         }
         
@@ -752,22 +678,21 @@ RESTART_LOOP: while (1) {
         $all_sets = [ $all_sets ] unless ref $all_sets eq 'ARRAY';
         @matching_sets = grep { ($_->{title} || '') =~ qr/$set_pattern/i } @$all_sets;
 
-        unless (@matching_sets) {
+        unless (@matching_sets) { # Changed: if (!@matching_sets)
             die "No sets matching pattern '$set_pattern' found.";
         }
         say "Info: Found " . scalar(@matching_sets) . " matching sets." if defined $debug;
         
-        # Load dynamic cooldown history from file
+        # Load cooldown history
         load_history();
 
         # 3. Main Continuous Posting Loop
         my $post_count = 0;
         my $moderated_wait_time = MODERATED_POST_TIMEOUT;
 
-        # This loop runs continuously, selecting groups and photos to post.
         POST_CYCLE_LOOP: while (1) { 
             
-            # Check for Daily Update and Refresh Cache if stale
+            # Check for stale group cache and refresh periodically
             if ($groups_list_ref->[0] and time() - $groups_list_ref->[0]->{timestamp} > GROUP_UPDATE_INTERVAL) {
                 say "Info: Group list cache expired. Initiating update." if defined $debug;
                 
@@ -778,14 +703,14 @@ RESTART_LOOP: while (1) {
                     warn "Warning: Failed to update group list cache. Will continue with old cache for now.";
                 }
                 
-                # Re-apply static filters after refresh
+                # Re-apply filters after cache update
                 @all_eligible_groups = @{ filter_eligible_groups($groups_list_ref, $group_match_rx, $exclude_match_rx) };
                 say "Info: Master group list refreshed and re-filtered. Found " . scalar(@all_eligible_groups) . " eligible groups." if defined $debug;
             }
             
             my @current_groups = @all_eligible_groups;
             
-            # Long pause if no groups are currently eligible
+            # Check if there are any eligible groups left after all checks
             unless (@current_groups) {
                 warn "Warning: All groups filtered out due to checks/patterns. Entering long pause before attempting a new cycle." if defined $debug;
                 
@@ -798,19 +723,16 @@ RESTART_LOOP: while (1) {
             print "\n--- Starting new posting cycle (Post #$post_count). Groups to attempt: " . scalar(@current_groups) . " ---";
 
             # 4. Find a suitable group/photo combination
-            # This loop attempts MAX_TRIES times to find a valid combination before giving up this cycle.
             POST_ATTEMPT_LOOP: for (1 .. MAX_TRIES) { 
-                # Exit if the list of groups to try has been exhausted
-                last POST_ATTEMPT_LOOP unless scalar @current_groups; 
+                unless (scalar @current_groups) { # Changed: unless (scalar @current_groups)
+                    last POST_ATTEMPT_LOOP; # Exit if group pool is exhausted for this cycle
+                }
 
-                # Select a random group index using standard rand()
                 my $random_index = int(rand(@current_groups));
                 my $selected_group = $current_groups[$random_index];
                 
-                # Basic safety check for data integrity (should be fine if rand() is behaving)
-                unless (defined $selected_group && defined $selected_group->{id}) {
+                unless (defined $selected_group && defined $selected_group->{id}) { # Changed: if (!defined $selected_group && !defined $selected_group->{id})
                     warn "Warning: Selected group at index $random_index is undefined or missing ID. Removing and retrying.";
-                    # Safely remove the problematic index if it exists
                     splice(@current_groups, $random_index, 1) if $random_index < scalar @current_groups;
                     next POST_ATTEMPT_LOOP;
                 }
@@ -818,21 +740,12 @@ RESTART_LOOP: while (1) {
                 my $group_id = $selected_group->{id};
                 my $group_name = $selected_group->{name};
                 
-                # --- DYNAMIC CHECK SYSTEM ---
-                # Five-layer validation ensures we only post to appropriate groups:
-                # 1. Rate Limit Cooldown: Internal tracking of API-imposed limits
-                # 2. Moderated Cooldown: Prevents spamming groups with approval queues  
-                # 3. Real-time API Status: Fresh throttle data from Flickr
-                # 4. Last Poster Check: Avoids back-to-back posts in same group
-                # 5. Photo Context Check: Prevents duplicate posts
-                
-                # --- DYNAMIC CHECK 1: Rate Limit Cooldown Check ---
-                # Check internal history for groups temporarily rate-limited due to API errors or limits.
+                # 1. Rate Limit Cooldown Check
                 if (defined $rate_limit_history{$group_id}) {
                     my $wait_until = $rate_limit_history{$group_id}->{wait_until};
                     if (time() < $wait_until) { 
                         say "Debug: Skipping group '$group_name' ($group_id). Rate limit cooldown active until " . scalar(localtime($wait_until)) if defined $debug;
-                        splice(@current_groups, $random_index, 1); 
+                        splice(@current_groups, $random_index, 1); # Remove from current pool for this cycle
                         next POST_ATTEMPT_LOOP;
                     } else { 
                         say "Debug: Cooldown cleared for '$group_name' ($group_id). Rate limit history expired." if defined $debug;
@@ -841,35 +754,35 @@ RESTART_LOOP: while (1) {
                     }
                 }
                 
-                # --- DYNAMIC CHECK 2: Moderated Cooldown Check ---
-                # Check internal history for moderated groups to prevent spamming the queue.
+                # 2. Moderated Cooldown Check
                 if ($selected_group->{moderated} == 1 and defined $moderated_post_history{$group_id}) {
                     my $history = $moderated_post_history{$group_id};
                     my $wait_until = $history->{post_time} + $moderated_wait_time;
+                    # Check if the photo is now visible in the group (i.e., approved)
                     my $context_check = is_photo_in_group($history->{photo_id}, $group_id);
 
-                    unless (defined $context_check) { 
+                    unless (defined $context_check) { # Changed: unless (defined $context_check)
                         say "Debug: Group '$group_name' ($group_id) failed photo context check (API error) for previous post. Retrying group later in cycle." if defined $debug;
                         next POST_ATTEMPT_LOOP;
-                    } elsif ($context_check) { 
+                    } elsif ($context_check) { # Photo is approved (found in group)
                         say "Debug: Cooldown cleared for '$group_name' ($group_id). Previously posted photo found in group." if defined $debug;
                         delete $moderated_post_history{$group_id}; 
                         save_history();
-                    } elsif (time() < $wait_until) { 
+                    } elsif (time() < $wait_until) { # Photo not approved and cooldown still active
                         say "Debug: Skipping group '$group_name' ($group_id). Moderated cooldown active until " . scalar(localtime($wait_until)) . ". Photo not yet in group." if defined $debug;
                         splice(@current_groups, $random_index, 1); 
                         next POST_ATTEMPT_LOOP;
-                    } else { 
+                    } else { # Cooldown expired but photo never approved
                         say "Debug: Cooldown expired for '$group_name' ($group_id). Photo not found. Clearing history." if defined $debug;
                         delete $moderated_post_history{$group_id}; 
                         save_history();
                     }
                 }
                 
-                # --- DYNAMIC CHECK 3: Real-Time API Status Check (Throttle) ---
-                # Check the current posting allowance from Flickr's real-time API.
+                # 3. Real-Time API Status Check (Throttle)
                 if ($selected_group->{limit_mode} ne 'none' || $selected_group->{moderated} == 1) {
                     my $status = check_posting_status($group_id, $group_name);
+                    # Update local cache with real-time dynamic info
                     $selected_group->{limit_mode} = $status->{limit_mode};
                     $selected_group->{remaining} = $status->{remaining};
                     unless ($status->{can_post}) { 
@@ -879,10 +792,9 @@ RESTART_LOOP: while (1) {
                     }
                 }
 
-                # --- DYNAMIC CHECK 4: Check Last Poster ---
-                # Prevent back-to-back posting in the same group by the same user.
+                # 4. Check Last Poster (Avoid posting consecutively to the same group)
                 my $response = flickr_api_call('flickr.groups.pools.getPhotos', { group_id => $group_id, per_page => 1 });
-                unless (defined $response) {
+                unless (defined $response) { # Changed: unless (defined $response)
                     say "Debug: Failed to get photos from group '$group_name' ($group_id). Ignoring this group for now." if defined $debug;
                     splice(@current_groups, $random_index, 1); 
                     next POST_ATTEMPT_LOOP;
@@ -895,18 +807,19 @@ RESTART_LOOP: while (1) {
                     next POST_ATTEMPT_LOOP;
                 }
 
-                # --- DYNAMIC CHECK 5: Select Photo and Check Context ---
+                # 5. Select Photo and Check Context
                 my $photo_data = find_random_photo(\@matching_sets);
-                unless ($photo_data and $photo_data->{id}) {
+                unless ($photo_data and $photo_data->{id}) { # Changed: unless ($photo_data and $photo_data->{id})
                     say "Debug: Failed to find a suitable photo or exhausted all sets/photos (Photo Age/Public Check)." if defined $debug;
-                    next POST_ATTEMPT_LOOP;
+                    # This means we must exit the POST_ATTEMPT_LOOP and wait for a new cycle
+                    last POST_ATTEMPT_LOOP;
                 }
                 
                 my ($photo_id, $photo_title, $set_title, $set_id) = @$photo_data{qw/id title set_title set_id/};
                 
-                # Check if the photo is already in the group's pool
+                # Double-check: is the selected photo already in the target group?
                 my $in_group_check = is_photo_in_group($photo_id, $group_id);
-                unless (defined $in_group_check) { 
+                unless (defined $in_group_check) { # Changed: unless (defined $in_group_check)
                     say "Debug: Group '$group_name' ($group_id) failed photo context check for new photo (API error). Retrying." if defined $debug;
                     next POST_ATTEMPT_LOOP;
                 } elsif ($in_group_check) { 
@@ -914,49 +827,48 @@ RESTART_LOOP: while (1) {
                     next POST_ATTEMPT_LOOP;
                 }
                 
-                # --- 5. Post the photo! ---
+                # --- 6. Post the photo! ---
                 if ($dry_run) {
                     print "DRY RUN: Would add photo '$photo_title' ($photo_id) from set '$set_title' to group '$group_name' ($group_id)";
                     
                     $post_count++;
-                    last POST_ATTEMPT_LOOP; # Exit the inner loop on success (real or dry-run)
+                    last POST_ATTEMPT_LOOP; # Exit attempt loop to apply post delay
 
                 } else {
                     my $response = flickr_api_call('flickr.groups.pools.add', { photo_id => $photo_id, group_id => $group_id });
                     
-                    # Check for Fatal API Error (undef)
-                    unless (defined $response) {
+                    unless (defined $response) { # Changed: unless (defined $response)
                         print "WARNING: Could not add photo '$photo_title' ($photo_id) to group '$group_name' ($group_id). API failed after all retries. Will skip current group and continue script execution.";
-                        last POST_ATTEMPT_LOOP; # Exit the inner loop
+                        last POST_ATTEMPT_LOOP; 
                     } 
                     
-                    # Check for SUCCESS or Moderated Pending Queue Status
-                    my $moderated_pending = (!$response->{success} && $response->{error_message} =~ /Pending Queue for this Pool/i);
+                    # Check for "success" or "moderated pending" success
+                    my $moderated_pending = (!$response->{success} && ($response->{error_message} // '') =~ /Pending Queue for this Pool/i);
 
                     if ($response->{success} || $moderated_pending) {
                         
-                        if ($response->{success}) {
+                        unless ($moderated_pending) { # Changed: if ($response->{success}) { ... } else { ... }
                             print "SUCCESS: Added photo '$photo_title' ($photo_id) to group '$group_name' ($group_id)";
                         } else {
                             print "INFO: Added photo '$photo_title' ($photo_id) to group '$group_name' ($group_id). Status: Moderated - Pending Queue.";
                         }
                         
-                        # Apply cooldown for moderated groups to prevent re-posting until accepted/timeout
+                        # Aplica cooldown para grupos moderados
                         if ($selected_group->{moderated} == 1) {
                              $moderated_post_history{$group_id} = { post_time => time(), photo_id  => $photo_id };
                              say "Info: Moderated post successful. Group '$group_name' set to $moderated_wait_time second cooldown." if defined $debug;
                              save_history();
                         }
 
-                        # Apply dynamic cooldown for rate-limited groups to respect the group's rules
-                        if ($response->{success} && $selected_group->{limit_mode} ne 'none') {
+                        # Aplica cooldown de limite de taxa
+                        # Simplificado: Testamos apenas 'limit_mode' pois a condição de sucesso é garantida pelo bloco 'if' principal.
+                        if ($selected_group->{limit_mode} ne 'none') {
                              my $limit = $selected_group->{limit_count} || 1; 
                              my $period_seconds = $selected_group->{limit_mode} eq 'day' ? SECONDS_IN_DAY : $selected_group->{limit_mode} eq 'week' ? SECONDS_IN_WEEK : $selected_group->{limit_mode} eq 'month' ? SECONDS_IN_MONTH : 0;
 
                             if ($limit > 0 && $period_seconds > 0) {
                                 my $base_pause_time = $period_seconds / $limit;
-                                # Add randomness (70% to 110%) to the pause time
-                                my $random_multiplier = 0.7 + (rand() * 0.4); 
+                                my $random_multiplier = 0.7 + (rand() * 0.4); # Add randomness (70% to 110%)
                                 my $pause_time = int($base_pause_time * $random_multiplier);
                                 $pause_time = 1 unless $pause_time > 0;
                                 my $wait_until = time() + $pause_time;
@@ -967,53 +879,33 @@ RESTART_LOOP: while (1) {
                         }                       
                         
                         $post_count++;
-                        last POST_ATTEMPT_LOOP; # Exit the inner loop on success
+                        last POST_ATTEMPT_LOOP; # Exit attempt loop to apply post delay
 
                     } else {
-                        # Non-Fatal Error (Photo limit reached, Group Closed, etc.)
                         my $error_msg = $response->{error_message} || 'Unknown API Error';
                         
                         print "WARNING: Could not add photo '$photo_title' ($photo_id) to group '$group_name' ($group_id): $error_msg";
                         
-                        # Special handling for "Photo limit reached" error: apply a 24-hour cooldown
+                        # Handle specific non-retryable error: photo limit reached
                         if ($error_msg =~ /Photo limit reached/i) {
-                            my $pause_time = SECONDS_IN_DAY; 
+                            my $pause_time = SECONDS_IN_DAY; # Cooldown for a full day as a safe measure
                             my $wait_until = time() + $pause_time;
                             $rate_limit_history{$group_id} = { wait_until => $wait_until, limit_mode => 'day' };
                             say "Info: Group '$group_name' hit Photo Limit. Applying $pause_time sec cooldown." if defined $debug;
                             save_history();
                         }
                         
-                        next POST_ATTEMPT_LOOP; # try again on non-fatal error
+                        next POST_ATTEMPT_LOOP; # Try next group/photo combo
                     }
                 }
-            } # End of POST_ATTEMPT_LOOP
+            } 
 
-            # Pause between posting attempts
-            # Select a random sleep time up to $timeout_max
+            # Apply random delay between posts
             my $sleep_time = int(rand($timeout_max + 1));
             print "Pausing for $sleep_time seconds before next attempt.";
             sleep $sleep_time;
-        } # End of POST_CYCLE_LOOP
-    }; # End of eval block
-    
-    # --- ERROR RECOVERY STRATEGY ---
-    # The script employs a graduated response to different error types:
-    #
-    # TRANSIENT API ERRORS (Network timeouts, rate limits):
-    #   - Exponential backoff with max 5 retries
-    #   - Progressive delays: 1, 8, 64, 512, 4096 seconds
-    #
-    # NON-FATAL FLICKR ERRORS (Photo limits, closed groups):
-    #   - Single attempt with appropriate cooldown
-    #   - Continue with next group/photo combination
-    #
-    # FATAL SCRIPT ERRORS (Authentication, missing files):
-    #   - Master restart with exponential backoff
-    #   - State preservation through file-based history
-    #   - Capped maximum delay of 24 hours
-    #
-    # This ensures robust 24/7 operation with minimal manual intervention.
+        } 
+    }; 
     
     my $fatal_error = $@;
 
@@ -1034,4 +926,4 @@ RESTART_LOOP: while (1) {
     
     sleep $delay;
 
-} # End of the master RESTART_LOOP
+}
