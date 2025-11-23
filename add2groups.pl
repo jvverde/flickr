@@ -482,31 +482,46 @@ sub apply_short_cooldown {
 
 # Filters groups based on current cooldown history (rate limits and moderated post times)
 # Returns arrayref of groups that are currently eligible for posting
+
 sub filter_blocked_groups {
     my ($groups_ref) = @_;
     my $now = time();
+    my $original_group_count = scalar @$groups_ref;
+    
+    debug("Starting group blocking filter (Total groups: $original_group_count). Time now: $now") if defined $debug and $debug > 1;
 
     my @filtered = grep {
-        my $item = $_; 
+        my $item = $_;
         sub {
             my $group_id = $item->{id};
             my $group_name = $item->{name};
 
             # 0. Short Cooldown Check (Non-Persistent, 20-60 min)
             if (exists $short_cooldown_history{$group_id}) {
-                if ($now < $short_cooldown_history{$group_id}->{wait_until}) {
-                    debug("Group $group_id blocked by non-persistent cooldown (Reason: $short_cooldown_history{$group_id}->{reason}).") if defined $debug and $debug > 1;
+                my $wait_until = $short_cooldown_history{$group_id}->{wait_until};
+                my $reason = $short_cooldown_history{$group_id}->{reason} || 'Unknown';
+                
+                if ($now < $wait_until) {
+                    my $remaining = $wait_until - $now;
+                    debug("Group '$group_name' ($group_id) BLOCKED by short cooldown. Reason: $reason. Remaining: $remaining sec.") if defined $debug;
                     return 0; # Still blocked by short cooldown
                 } else {
+                    debug("Group '$group_name' ($group_id) short cooldown EXPIRED. Reason: $reason.") if defined $debug and $debug > 1;
                     delete $short_cooldown_history{$group_id}; # Cooldown expired (removed from memory)
                 }
             }
             
             # 1. Rate Limit Cooldown Check
             if (exists $rate_limit_history{$group_id}) {
-                if ($now < $rate_limit_history{$group_id}->{wait_until}) {
+                my $wait_until = $rate_limit_history{$group_id}->{wait_until};
+                my $limit_mode = $rate_limit_history{$group_id}->{limit_mode} || 'Unknown';
+
+                if ($now < $wait_until) {
+                    my $remaining = $wait_until - $now;
+                    debug("Group '$group_name' ($group_id) BLOCKED by Rate Limit ($limit_mode). Remaining: $remaining sec.") if defined $debug and $debug > 1;
                     return 0; # Still blocked by rate limit
                 } else {
+                    debug("Group '$group_name' ($group_id) Rate Limit cooldown EXPIRED.") if defined $debug and $debug > 1;
                     delete $rate_limit_history{$group_id}; # Cooldown expired
                 }
             }
@@ -515,31 +530,47 @@ sub filter_blocked_groups {
             if ($item->{moderated} && exists $moderated_post_history{$group_id}) {
                 my $wait_until = $moderated_post_history{$group_id}->{post_time} + MODERATED_POST_TIMEOUT;
                 my $photo_id = $moderated_post_history{$group_id}->{photo_id};
+
+                # Check 2a: Is the photo actually in the group now (meaning moderation passed)?
                 my $context_check = is_photo_in_group($photo_id, $group_id);
-                unless (defined $context_check ) {
-                    alert("Filtering out group '$group_name' ($group_id). Moderated check failed (API error)");
-                } elsif ($context_check) {
-                    debug("Photo $photo_id found in group '$group_name'. Clearing moderated cooldown.") if defined $debug and $debug > 1;
-                    delete $moderated_post_history{$group_id}; # Cooldown expired
+                
+                unless (defined $context_check) {
+                    alert("Filtering out group '$group_name' ($group_id). Moderated status check failed (API error).");
+                    return 0; # API failed: block the group for safety/next cycle
+                } 
+                
+                if ($context_check) {
+                    debug("Group '$group_name' ($group_id) - Moderated post check SUCCESS. Photo $photo_id found in pool. Cooldown cleared.") if defined $debug and $debug > 1;
+                    delete $moderated_post_history{$group_id}; # Moderation passed! Clear cooldown.
+                
                 } elsif ($now < $wait_until) {
+                    my $remaining = $wait_until - $now;
+                    debug("Group '$group_name' ($group_id) BLOCKED by Moderated Cooldown. Remaining: $remaining sec. (Photo $photo_id still not found in pool).") if defined $debug;
                     return 0; # Still blocked by moderation cooldown
+
                 } else {
-                    debug("Moderated cooldown expired after timeout for '$group_name'") if defined $debug and $debug > 1;
-                    delete $moderated_post_history{$group_id}; # Cooldown expired
+                    # Time ran out, and photo was never found in the pool. Assume failed moderation or photo removed.
+                    debug("Group '$group_name' ($group_id) Moderated Cooldown EXPIRED after timeout ($MODERATED_POST_TIMEOUT sec). Photo $photo_id not found in pool.") if defined $debug and $debug > 1;
+                    delete $moderated_post_history{$group_id}; # Cooldown expired (clear history)
                 }
             }
+            
+            # 3. Final Check (Only run if -d > 1)
+            debug("Group '$group_name' ($group_id) ALLOWED for posting (Passed all dynamic checks).") if defined $debug and $debug > 1;
             return 1; # Allowed
-        }->(); 
+        }->();
     } @$groups_ref;
 
     # Save history if any cooldowns expired (implying changes in the history state)
-    if (scalar @filtered != scalar @$groups_ref) {
+    my $filtered_count = scalar @filtered;
+    unless ($filtered_count == $original_group_count) {
+        my $blocked_count = $original_group_count - $filtered_count;
+        debug("Group filter finished. Blocked $blocked_count group(s) due to dynamic cooldowns.") if defined $debug and $debug > 1;
         save_history();
     }
     
     return \@filtered;
 }
-
 
 # --- Core Logic Subroutines ---
 
