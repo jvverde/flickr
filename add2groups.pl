@@ -1215,9 +1215,9 @@ RESTART_LOOP: while (1) {
                     $selected_group->{limit_mode} = $status->{limit_mode};
                     $selected_group->{remaining} = $status->{remaining};
                     unless ($status->{can_post}) { 
+                        debug("Skipping '$group_name' (Dynamic Block: $status->{limit_mode} or Remaining=0)");
                         # Cooldown Curto para Dynamic Block
                         apply_short_cooldown($group_id, $group_name, "Dynamic Block ($status->{limit_mode} / $status->{remaining} remaining)"); 
-                        debug("Skipping '$group_name' (Dynamic Block: $status->{limit_mode} or Remaining=0)");
                         splice(@current_groups, $random_index, 1); 
                         next POST_ATTEMPT_LOOP;
                     }
@@ -1233,9 +1233,9 @@ RESTART_LOOP: while (1) {
                 my $photos = $response->as_hash->{photos}->{photo} || [];
                 $photos = [ $photos ] unless ref $photos eq 'ARRAY';
                 if (@$photos and $photos->[0]->{owner} eq $user_nsid) { 
+                    debug("Skipping '$group_name' (You are last poster)");
                     # Cooldown Curto para Last Poster
                     apply_short_cooldown($group_id, $group_name, "Last Poster Detected"); 
-                    debug("Skipping '$group_name' (You are last poster)");
                     splice(@current_groups, $random_index, 1); 
                     next POST_ATTEMPT_LOOP;
                 }
@@ -1322,8 +1322,7 @@ RESTART_LOOP: while (1) {
                             $rate_limit_history{$group_id} = { wait_until => time() + $pause_time, limit_mode => 'day' };
                             save_history();
                             alert("Group '$group_name' hit Photo limit. Applying day cooldown and removing group from cycle.");
-                        } 
-                        elsif ($error_msg =~ /Content not allowed/i) {
+                        } elsif ($error_msg =~ /Content not allowed/i) {
                             alert("Group '$group_name' rejected photo due to 'Content not allowed'. Removing group from cycle.");
                         } 
                         
