@@ -557,7 +557,7 @@ sub filter_blocked_groups {
 
                 } else {
                     # Time ran out, and photo was never found in the pool. Assume failed moderation or photo removed.
-                    debug1("Group '$group_name' ($group_id) Moderated Cooldown EXPIRED after timeout ($MODERATED_POST_TIMEOUT sec). Photo $photo_id not found in pool.");
+                    debug1("Group '$group_name' ($group_id) Moderated Cooldown EXPIRED after timeout (" . MODERATED_POST_TIMEOUT . " sec). Photo $photo_id not found in pool.");
                     delete $moderated_post_history{$group_id}; # Cooldown expired (clear history)
                 }
             }
