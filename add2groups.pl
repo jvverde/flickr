@@ -70,7 +70,7 @@ GetOptions(
     's|set-pattern=s'     => \$set_pattern,
     'g|group-pattern=s'   => \$group_pattern,
     'e|exclude=s'         => \$exclude_pattern,
-    'a|max-age=i'         => \$max_age_years,
+    'a|max-age:i'         => \$max_age_years,
     't|timeout:i'         => \$timeout_max,
     'p|persistent'        => \$persistent_exclude,
     'c|clean'             => \$clean_excludes,
@@ -206,7 +206,7 @@ sub flickr_api_call {
     my ($method, $args) = @_;
     my $retry_delay = 1;
 
-    debug("API CALL: $method", $args) if defined $debug and $debug > 0;
+    debug("API CALL: $method", $args) if $debug > 0;
 
     for my $attempt (1 .. MAX_API_RETRIES) {
         my $response = eval { $flickr->execute_method($method, $args) };
@@ -219,7 +219,7 @@ sub flickr_api_call {
             
             # Moderated groups return an "error" but the post is accepted into the queue
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Pending Queue for this Pool/i) {
-                debug("Moderated Group Success Detected: $error. Treating as successful and non-retryable.") if defined $debug;
+                debug("Moderated Group Success Detected: $error. Treating as successful and non-retryable.");
                 return $response; 
             }
 
@@ -285,14 +285,14 @@ sub _read_file {
     my $fh; 
 
     return undef unless -e $file_path;
-    debug("Accessing file $file_path") if defined $debug;
+    debug("Accessing file $file_path");
 
     unless (open $fh, '<:encoding(UTF-8)', $file_path) {
         alert("Cannot open $file_path for reading: $!"); 
         return undef;
     }
     unless (flock($fh, LOCK_SH)) {
-        debug("Failed to acquire shared lock on $file_path. Skipping read.") if defined $debug;
+        debug("Failed to acquire shared lock on $file_path. Skipping read.");
         close $fh;
         return undef;
     }
@@ -317,13 +317,13 @@ sub save_groups {
         alert("Failed to save group data to $groups_file.");
         return 0;
     }
-    debug("Group list cache written to $groups_file") if defined $debug;
+    debug("Group list cache written to $groups_file");
     return 1;
 }
 
 # Loads the group list from the groups file
 sub load_groups {
-    debug("Loading groups from $groups_file") if defined $debug;
+    debug("Loading groups from $groups_file");
     my $json_text = _read_file($groups_file) or return undef;
     my $data = eval { decode_json($json_text) };
     if ($@) {
@@ -346,14 +346,14 @@ sub save_history {
         alert("Failed to save history data to $history_file.");
         return 0;
     }
-    debug("Cooldown history written to $history_file") if defined $debug and $debug > 1; 
+    debug("Cooldown history written to $history_file") if $debug > 1;
     return 1;
 }
 
 # Loads the history (cooldowns) from the history file
 sub load_history {
     return unless defined $history_file; 
-    debug("Loading history from $history_file") if defined $debug;
+    debug("Loading history from $history_file");
     my $json_text = _read_file($history_file) or return;
     my $data = eval { decode_json($json_text) };
     if ($@) {
@@ -362,7 +362,7 @@ sub load_history {
     }
     %moderated_post_history = %{$data->{moderated} // {}};
     %rate_limit_history     = %{$data->{ratelimit} // {}};
-    debug("History loaded. Moderated count: " . scalar(keys %moderated_post_history)) if defined $debug;
+    debug("History loaded. Moderated count: " . scalar(keys %moderated_post_history));
 }
 
 # --- Photo Cache Subroutines ---
@@ -380,13 +380,13 @@ sub save_photo_cache {
 # Loads the persistent photo cache into memory
 sub load_photo_cache {
     unless (-e CACHE_FILE_PATH) {
-        info("Photo cache file not found. Creating new cache at " . CACHE_FILE_PATH);
+        debug("Photo cache file not found. Creating new cache at " . CACHE_FILE_PATH);
         %photo_cache = (); 
         save_photo_cache(); 
         return;
     }
 
-    debug("Loading photo cache from " . CACHE_FILE_PATH) if defined $debug;
+    debug("Loading photo cache from " . CACHE_FILE_PATH);
     
     my $json_text = _read_file(CACHE_FILE_PATH);
     return unless defined $json_text;
@@ -409,7 +409,7 @@ sub load_photo_cache {
             $expired_count++;
         }
     }
-    debug("Photo cache loaded. Entries: " . scalar(keys %photo_cache) . " (Purged $expired_count expired)") if defined $debug;
+    debug("Photo cache loaded. Entries: " . scalar(keys %photo_cache) . " (Purged $expired_count expired)");
 }
 
 # Forces an update to the group membership cache for a specific photo/group combination
@@ -421,11 +421,11 @@ sub update_group_membership_cache {
         timestamp => time(),
         is_member => $is_member ? 1 : 0, # 1 for member, 0 for not member
     };
-    debug("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id") if defined $debug and $debug > 1;
+    debug("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id") if $debug > 1;
     save_photo_cache();
 }
 
-# --- Short Cooldown Routine (20-60 min) --- <--- NOVO
+# --- Short Cooldown Routine (20-60 min) ---
 sub apply_short_cooldown {
     my ($group_id, $group_name, $reason) = @_;
     my $min_delay = 20 * 60;  # 1200 seconds (20 minutes)
@@ -457,10 +457,10 @@ sub filter_blocked_groups {
         sub {
             my $gid = $item->{id};
 
-            # 0. Short Cooldown Check (Non-Persistent, 20-60 min) <--- ATUALIZADO
+            # 0. Short Cooldown Check (Non-Persistent, 20-60 min)
             if (exists $short_cooldown_history{$gid}) {
                 if ($now < $short_cooldown_history{$gid}->{wait_until}) {
-                    debug("Group $gid blocked by non-persistent cooldown (Reason: $short_cooldown_history{$gid}->{reason}).") if defined $debug && $debug > 1; 
+                    debug("Group $gid blocked by non-persistent cooldown (Reason: $short_cooldown_history{$gid}->{reason}).") if $debug > 1;
                     return 0; # Still blocked by short cooldown
                 } else {
                     delete $short_cooldown_history{$gid}; # Cooldown expired (removed from memory)
@@ -499,7 +499,6 @@ sub filter_blocked_groups {
 
 
 # --- Core Logic Subroutines ---
-# ... (rest of helper subroutines remain unchanged) ...
 
 # Prints the script usage and help message
 sub show_usage {
@@ -559,7 +558,7 @@ sub init_flickr {
     }
     
     $user_nsid = $response->as_hash->{user}->{id};
-    debug("Logged in as $user_nsid") if defined $debug;
+    debug("Logged in as $user_nsid");
     return 1;
 }
 
@@ -568,7 +567,7 @@ sub init_flickr {
 sub update_and_store_groups {
     my $old_groups_ref = shift;
     $old_groups_ref = load_groups() // [] unless 'ARRAY' eq ref $old_groups_ref;
-    info("Refreshing group list from Flickr API...") if defined $debug;
+    debug("Refreshing group list from Flickr API...");
     
     # Get the list of all groups the user is a member of
     my $response = flickr_api_call('flickr.groups.pools.getGroups', {});
@@ -639,7 +638,7 @@ sub update_local_group_exclusions {
     my $changes_made = 0;
     my $exclude_rx = qr/($exclude_pattern)/si if defined $exclude_pattern;
     
-    info("Updating local group exclusion flags based on command-line arguments.") if defined $debug;
+    debug("Updating local group exclusion flags based on command-line arguments.");
     
     foreach my $entry (@$groups_ref) {
         my $gname = $entry->{name};
@@ -669,7 +668,7 @@ sub update_local_group_exclusions {
         info("Saved $changes_made exclusion changes to $groups_file (local update).");
         save_groups(\@results);
     } else {
-        info("No local exclusion changes detected.");
+        debug("No local exclusion changes detected.");
     }
     
     return \@results;
@@ -751,7 +750,7 @@ sub find_random_photo {
         my $set_id = $selected_set->{id};
         my $total = $selected_set->{photos};
 
-        debug("Selected set: $selected_set->{title} ($set_id)") if defined $debug;
+        debug("Selected set: $selected_set->{title} ($set_id)");
 
         splice(@sets_to_try, $set_index, 1);
         $used_set_ids{$set_id} = 1;
@@ -777,17 +776,17 @@ sub find_random_photo {
             if (exists $photo_cache{$cache_key}) {
                 my $entry = $photo_cache{$cache_key};
                 if (time() - $entry->{timestamp} < CACHE_EXPIRATION) {
-                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if defined $debug and $debug > 1;
+                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if $debug > 1;
                     $photos_on_page = $entry->{photos};
                 } else {
-                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if defined $debug and $debug > 1;
+                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if $debug > 1;
                     delete $photo_cache{$cache_key};
                 }
             }
 
             # 2. Fetch from API if cache missed or expired
             unless (defined $photos_on_page) {
-                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page") if defined $debug;
+                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page");
                 
                 my $get_photos_params = { 
                     photoset_id => $set_id, 
@@ -816,7 +815,7 @@ sub find_random_photo {
             }
             
             unless (@$photos_on_page) { 
-                debug("Page $random_page returned no public photos.") if defined $debug;
+                debug("Page $random_page returned no public photos.");
                 next PAGE_LOOP; 
             }
 
@@ -860,7 +859,7 @@ sub find_random_photo {
         }
     }
     
-    alert("Exhausted all matching sets, pages, and photos.") if defined $debug;
+    alert("Exhausted all matching sets, pages, and photos.");
     return;
 }
 
@@ -876,11 +875,11 @@ sub is_photo_in_group {
         my $entry = $photo_cache{$cache_key};
         if ($now - $entry->{timestamp} < CACHE_EXPIRATION) {
             # Cache Hit: return cached result
-            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO')) if defined $debug;
+            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO'));
             return $entry->{is_member};
         } else {
             # Cache Expired: delete entry and continue to API call
-            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.") if defined $debug;
+            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.");
             delete $photo_cache{$cache_key};
         }
     }
@@ -1053,7 +1052,7 @@ RESTART_LOOP: while (1) {
         unless (@all_eligible_groups) {
             die "No groups match all required filters.";
         }
-        info("Found " . scalar(@all_eligible_groups) . " groups eligible for posting.") if defined $debug;
+        debug("Found " . scalar(@all_eligible_groups) . " groups eligible for posting.");
 
         # Fetch and filter photosets based on set-pattern
         my $response = flickr_api_call('flickr.photosets.getList', { user_id => $user_nsid }); 
@@ -1068,7 +1067,7 @@ RESTART_LOOP: while (1) {
         unless (@matching_sets) { 
             die "No sets matching pattern '$set_pattern' found.";
         }
-        info("Found " . scalar(@matching_sets) . " matching sets.") if defined $debug;
+        debug("Found " . scalar(@matching_sets) . " matching sets.");
         
         # Load persistent cooldown history and photo/group cache
         load_history();
@@ -1081,7 +1080,7 @@ RESTART_LOOP: while (1) {
             
             # Check for stale group cache and refresh if needed
             if ($groups_list_ref->[0] and time() - $groups_list_ref->[0]->{timestamp} > GROUP_UPDATE_INTERVAL) {
-                info("Group list cache expired. Initiating update.") if defined $debug;
+                debug("Group list cache expired. Initiating update.");
                 
                 my $new_groups_ref = update_and_store_groups();
                 if (defined $new_groups_ref) {
@@ -1092,7 +1091,7 @@ RESTART_LOOP: while (1) {
                 
                 # Re-apply filters after refreshing the full list
                 @all_eligible_groups = @{ filter_eligible_groups($groups_list_ref, $group_match_rx, $exclude_match_rx) };
-                info("Group list refreshed. Found " . scalar(@all_eligible_groups) . " eligible groups.") if defined $debug;
+                debug("Group list refreshed. Found " . scalar(@all_eligible_groups) . " eligible groups.");
             }
             
             # Filter groups against dynamic cooldowns (history)
@@ -1109,7 +1108,7 @@ RESTART_LOOP: while (1) {
             # 4. Find ONE random photo for this cycle
             my $photo_data = find_random_photo(\@matching_sets);
             unless ($photo_data and $photo_data->{id}) { 
-                debug("Failed to find suitable photo in any matching sets.") if defined $debug;
+                debug("Failed to find suitable photo in any matching sets.");
                 my $short_sleep = int(rand(10)) + 5; 
                 info("No suitable photo found. Pausing for $short_sleep seconds before restarting cycle.");
                 sleep $short_sleep;
@@ -1139,9 +1138,9 @@ RESTART_LOOP: while (1) {
                     $selected_group->{limit_mode} = $status->{limit_mode};
                     $selected_group->{remaining} = $status->{remaining};
                     unless ($status->{can_post}) { 
-                        # --- NOVO: Cooldown Curto para Dynamic Block ---
+                        # Cooldown Curto para Dynamic Block
                         apply_short_cooldown($group_id, $group_name, "Dynamic Block ($status->{limit_mode} / $status->{remaining} remaining)"); 
-                        debug("Skipping '$group_name' (Dynamic Block: $status->{limit_mode} or Remaining=0)") if defined $debug;
+                        debug("Skipping '$group_name' (Dynamic Block: $status->{limit_mode} or Remaining=0)");
                         splice(@current_groups, $random_index, 1); 
                         next POST_ATTEMPT_LOOP;
                     }
@@ -1156,9 +1155,9 @@ RESTART_LOOP: while (1) {
                 my $photos = $response->as_hash->{photos}->{photo} || [];
                 $photos = [ $photos ] unless ref $photos eq 'ARRAY';
                 if (@$photos and $photos->[0]->{owner} eq $user_nsid) { 
-                    # --- NOVO: Cooldown Curto para Last Poster ---
+                    # Cooldown Curto para Last Poster
                     apply_short_cooldown($group_id, $group_name, "Last Poster Detected"); 
-                    debug("Skipping '$group_name' (You are last poster)") if defined $debug;
+                    debug("Skipping '$group_name' (You are last poster)");
                     splice(@current_groups, $random_index, 1); 
                     next POST_ATTEMPT_LOOP;
                 }
@@ -1167,7 +1166,7 @@ RESTART_LOOP: while (1) {
                 my $in_group_check = is_photo_in_group($photo_id, $group_id);
                 unless (defined $in_group_check) { next POST_ATTEMPT_LOOP; } # API failure
                 elsif ($in_group_check) { 
-                    debug("Photo '$photo_title' already in '$group_name'.") if defined $debug;
+                    debug("Photo '$photo_title' already in '$group_name'.");
                     splice(@current_groups, $random_index, 1); # Remove group from this photo's cycle
                     next POST_ATTEMPT_LOOP;
                 }
@@ -1200,12 +1199,10 @@ RESTART_LOOP: while (1) {
                         # Immediately update the group membership cache (status: member)
                         update_group_membership_cache($photo_id, $group_id, 1);
 
-                        # --- NOVO: Aplicar Cooldown Curto (20-60 min) para grupos não moderados e sem limite ---
-                        # Condição simplificada conforme sugestão do utilizador
+                        # Aplicar Cooldown Curto (20-60 min) para grupos não moderados e sem limite
                         if ($selected_group->{moderated} == 0 && $selected_group->{limit_mode} eq 'none' ) {
                             apply_short_cooldown($group_id, $group_name, "Successful Post (Non-Limited)");
                         }
-                        # --------------------------------------------------------------------------
 
                         # Apply cooldown for moderated groups (1 day timeout)
                         if ($selected_group->{moderated} == 1) {
