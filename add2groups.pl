@@ -134,7 +134,7 @@ sub get_timestamp {
 sub get_context {
     my $i = 1;
     my @log_subs = qw(
-        get_context timestamp_message debug info success error fatal alert apply_short_cooldown
+        get_context timestamp_message debug debug1 info success error fatal alert apply_short_cooldown
     );
     my %is_log_sub = map { $_ => 1 } @log_subs;
 
@@ -178,6 +178,13 @@ sub debug {
     return unless defined $debug;
     my $full_message = $message . (defined $data && $debug > 2 ? Dumper($data) : '');
     timestamp_message("DEBUG", $full_message, 'cyan', *STDOUT);
+}
+
+# Debug level 1 logging (only if $debug > 1)
+sub debug1 {
+    my ($message) = @_;
+    return unless defined $debug and $debug > 1;
+    debug($message);
 }
 
 # Info level logging
@@ -374,7 +381,7 @@ sub save_history {
         alert("Failed to save history data to $history_file.");
         return 0;
     }
-    debug("Cooldown history written to $history_file") if defined $debug and $debug > 1;
+    debug1("Cooldown history written to $history_file");
     return 1;
 }
 
@@ -452,7 +459,7 @@ sub update_group_membership_cache {
         timestamp => time(),
         is_member => $is_member ? 1 : 0, # 1 for member, 0 for not member
     };
-    debug("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id") if defined $debug and $debug > 1;
+    debug1("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id");
     save_photo_cache();
 }
 
@@ -488,7 +495,7 @@ sub filter_blocked_groups {
     my $now = time();
     my $original_group_count = scalar @$groups_ref;
     
-    debug("Starting group blocking filter (Total groups: $original_group_count). Time now: $now") if defined $debug and $debug > 1;
+    debug1("Starting group blocking filter (Total groups: $original_group_count). Time now: $now");
 
     my @filtered = grep {
         my $item = $_;
@@ -503,10 +510,10 @@ sub filter_blocked_groups {
                 
                 if ($now < $wait_until) {
                     my $remaining = $wait_until - $now;
-                    debug("Group '$group_name' ($group_id) BLOCKED by short cooldown. Reason: $reason. Remaining: $remaining sec.") if defined $debug;
+                    debug1("Group '$group_name' ($group_id) BLOCKED by short cooldown. Reason: $reason. Remaining: $remaining sec.");
                     return 0; # Still blocked by short cooldown
                 } else {
-                    debug("Group '$group_name' ($group_id) short cooldown EXPIRED. Reason: $reason.") if defined $debug and $debug > 1;
+                    debug1("Group '$group_name' ($group_id) short cooldown EXPIRED. Reason: $reason.");
                     delete $short_cooldown_history{$group_id}; # Cooldown expired (removed from memory)
                 }
             }
@@ -518,10 +525,10 @@ sub filter_blocked_groups {
 
                 if ($now < $wait_until) {
                     my $remaining = $wait_until - $now;
-                    debug("Group '$group_name' ($group_id) BLOCKED by Rate Limit ($limit_mode). Remaining: $remaining sec.") if defined $debug and $debug > 1;
+                    debug1("Group '$group_name' ($group_id) BLOCKED by Rate Limit ($limit_mode). Remaining: $remaining sec.");
                     return 0; # Still blocked by rate limit
                 } else {
-                    debug("Group '$group_name' ($group_id) Rate Limit cooldown EXPIRED.") if defined $debug and $debug > 1;
+                    debug1("Group '$group_name' ($group_id) Rate Limit cooldown EXPIRED.");
                     delete $rate_limit_history{$group_id}; # Cooldown expired
                 }
             }
@@ -540,23 +547,23 @@ sub filter_blocked_groups {
                 } 
                 
                 if ($context_check) {
-                    debug("Group '$group_name' ($group_id) - Moderated post check SUCCESS. Photo $photo_id found in pool. Cooldown cleared.") if defined $debug and $debug > 1;
+                    debug1("Group '$group_name' ($group_id) - Moderated post check SUCCESS. Photo $photo_id found in pool. Cooldown cleared.");
                     delete $moderated_post_history{$group_id}; # Moderation passed! Clear cooldown.
                 
                 } elsif ($now < $wait_until) {
                     my $remaining = $wait_until - $now;
-                    debug("Group '$group_name' ($group_id) BLOCKED by Moderated Cooldown. Remaining: $remaining sec. (Photo $photo_id still not found in pool).") if defined $debug;
+                    debug1("Group '$group_name' ($group_id) BLOCKED by Moderated Cooldown. Remaining: $remaining sec. (Photo $photo_id still not found in pool).");
                     return 0; # Still blocked by moderation cooldown
 
                 } else {
                     # Time ran out, and photo was never found in the pool. Assume failed moderation or photo removed.
-                    debug("Group '$group_name' ($group_id) Moderated Cooldown EXPIRED after timeout ($MODERATED_POST_TIMEOUT sec). Photo $photo_id not found in pool.") if defined $debug and $debug > 1;
+                    debug1("Group '$group_name' ($group_id) Moderated Cooldown EXPIRED after timeout ($MODERATED_POST_TIMEOUT sec). Photo $photo_id not found in pool.");
                     delete $moderated_post_history{$group_id}; # Cooldown expired (clear history)
                 }
             }
             
             # 3. Final Check (Only run if -d > 1)
-            debug("Group '$group_name' ($group_id) ALLOWED for posting (Passed all dynamic checks).") if defined $debug and $debug > 1;
+            debug1("Group '$group_name' ($group_id) ALLOWED for posting (Passed all dynamic checks).");
             return 1; # Allowed
         }->();
     } @$groups_ref;
@@ -565,7 +572,7 @@ sub filter_blocked_groups {
     my $filtered_count = scalar @filtered;
     unless ($filtered_count == $original_group_count) {
         my $blocked_count = $original_group_count - $filtered_count;
-        debug("Group filter finished. Blocked $blocked_count group(s) due to dynamic cooldowns.") if defined $debug and $debug > 1;
+        debug1("Group filter finished. Blocked $blocked_count group(s) due to dynamic cooldowns.");
         save_history();
     }
     
@@ -891,17 +898,17 @@ sub find_random_photo {
             if (exists $photo_cache{$cache_key}) {
                 my $entry = $photo_cache{$cache_key};
                 if (time() - $entry->{timestamp} < CACHE_EXPIRATION) {
-                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if defined $debug and $debug > 1;
+                    debug1("CACHE HIT: Using cached photos for Set $set_id, Page $random_page");
                     $photos_on_page = $entry->{photos};
                 } else {
-                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if defined $debug and $debug > 1;
+                    debug1("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.");
                     delete $photo_cache{$cache_key};
                 }
             }
 
             # 2. Fetch from API if cache missed or expired
             unless (defined $photos_on_page) {
-                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page") if defined $debug and $debug > 1;
+                debug1("CACHE MISS: Fetching API for Set $set_id, Page $random_page");
                 
                 my $get_photos_params = { 
                     photoset_id => $set_id, 
@@ -958,7 +965,7 @@ sub find_random_photo {
                     }
 
                     if (defined $photo_timestamp && $photo_timestamp < $max_age_timestamp) {
-                        debug("PHOTO REJECTED: $selected_photo->{title} is older than max age filter (Epoch $photo_timestamp < $max_age_timestamp)") if defined $debug and $debug > 1;
+                        debug1("PHOTO REJECTED: $selected_photo->{title} is older than max age filter (Epoch $photo_timestamp < $max_age_timestamp)");
                         next PHOTO_LOOP; 
                     }
                 }
@@ -991,11 +998,11 @@ sub is_photo_in_group {
         my $entry = $photo_cache{$cache_key};
         if ($now - $entry->{timestamp} < CACHE_EXPIRATION) {
             # Cache Hit: return cached result
-            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO')) if defined $debug and $debug > 1;
+            debug1("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO'));
             return $entry->{is_member};
         } else {
             # Cache Expired: delete entry and continue to API call
-            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.") if defined $debug and $debug > 1;
+            debug1("CACHE EXPIRED: Group membership entry for $cache_key is too old.");
             delete $photo_cache{$cache_key};
         }
     }
