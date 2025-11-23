@@ -489,34 +489,43 @@ sub filter_blocked_groups {
     my @filtered = grep {
         my $item = $_; 
         sub {
-            my $gid = $item->{id};
+            my $group_id = $item->{id};
+            my $group_name = $item->{name};
 
             # 0. Short Cooldown Check (Non-Persistent, 20-60 min)
-            if (exists $short_cooldown_history{$gid}) {
-                if ($now < $short_cooldown_history{$gid}->{wait_until}) {
-                    debug("Group $gid blocked by non-persistent cooldown (Reason: $short_cooldown_history{$gid}->{reason}).") if defined $debug and $debug > 1;
+            if (exists $short_cooldown_history{$group_id}) {
+                if ($now < $short_cooldown_history{$group_id}->{wait_until}) {
+                    debug("Group $group_id blocked by non-persistent cooldown (Reason: $short_cooldown_history{$group_id}->{reason}).") if defined $debug and $debug > 1;
                     return 0; # Still blocked by short cooldown
                 } else {
-                    delete $short_cooldown_history{$gid}; # Cooldown expired (removed from memory)
+                    delete $short_cooldown_history{$group_id}; # Cooldown expired (removed from memory)
                 }
             }
             
             # 1. Rate Limit Cooldown Check
-            if (exists $rate_limit_history{$gid}) {
-                if ($now < $rate_limit_history{$gid}->{wait_until}) {
+            if (exists $rate_limit_history{$group_id}) {
+                if ($now < $rate_limit_history{$group_id}->{wait_until}) {
                     return 0; # Still blocked by rate limit
                 } else {
-                    delete $rate_limit_history{$gid}; # Cooldown expired
+                    delete $rate_limit_history{$group_id}; # Cooldown expired
                 }
             }
 
             # 2. Moderated Group Cooldown Check
-            if ($item->{moderated} && exists $moderated_post_history{$gid}) {
-                my $wait_until = $moderated_post_history{$gid}->{post_time} + MODERATED_POST_TIMEOUT;
-                if ($now < $wait_until) {
+            if ($item->{moderated} && exists $moderated_post_history{$group_id}) {
+                my $wait_until = $moderated_post_history{$group_id}->{post_time} + MODERATED_POST_TIMEOUT;
+                my $photo_id = $moderated_post_history{$group_id}->{photo_id};
+                my $context_check = is_photo_in_group($photo_id, $group_id);
+                unless (defined $context_check ) {
+                    alert("Filtering out group '$group_name' ($group_id). Moderated check failed (API error)");
+                } elsif ($context_check) {
+                    debug("Photo $photo_id found in group '$group_name'. Clearing moderated cooldown.") if defined $debug and $debug > 1;
+                    delete $moderated_post_history{$group_id}; # Cooldown expired
+                } elsif ($now < $wait_until) {
                     return 0; # Still blocked by moderation cooldown
                 } else {
-                    delete $moderated_post_history{$gid}; # Cooldown expired
+                    debug("Moderated cooldown expired after timeout for '$group_name'") if defined $debug and $debug > 1;
+                    delete $moderated_post_history{$group_id}; # Cooldown expired
                 }
             }
             return 1; # Allowed
@@ -1279,7 +1288,7 @@ RESTART_LOOP: while (1) {
                         }
                         
                         # Immediately update the group membership cache (status: member)
-                        update_group_membership_cache($photo_id, $group_id, 1);
+                        update_group_membership_cache($photo_id, $group_id, 1) unless $moderated_pending;
 
                         # Aplicar Cooldown Curto (20-60 min) para grupos não moderados e sem limite
                         if ($selected_group->{moderated} == 0 && $selected_group->{limit_mode} eq 'none' ) {
