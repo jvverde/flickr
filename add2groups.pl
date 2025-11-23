@@ -9,9 +9,31 @@
 # post it to eligible groups, respecting global and per-group cooldowns,
 # rate limits, and moderation queues.
 #
-# USAGE:
-# perl add2groups.pl -f groups.json -H history.json -s "Set Pattern" [OPTIONS]
-# perl add2groups.pl --clean-cache (To clear the photo cache)
+# FEATURES:
+# - Self-healing restart loop with exponential backoff
+# - Persistent photo and group membership cache (30-day validity)
+# - Dynamic group eligibility checking with real-time throttle status
+# - Multiple cooldown mechanisms (short-term, rate limit, moderated groups)
+# - Configurable filters for sets, groups, and photo age
+# - Dry-run mode for testing
+# - Detailed debug logging with multiple verbosity levels
+#
+# USAGE EXAMPLES:
+#
+# 1. Normal posting mode (requires -f, -H, -s):
+#    perl add2groups.pl -f groups.json -H history.json -s "Vacation|Travel" -g "Nature" -a 2 -d 1
+#
+# 2. List groups mode (requires -f):
+#    perl add2groups.pl -f groups.json -l -g "Landscape"
+#
+# 3. Dump group info mode (requires -f and -g):
+#    perl add2groups.pl -f groups.json --dump -g "Specific Group Name"
+#
+# 4. Dry-run simulation:
+#    perl add2groups.pl -f groups.json -H history.json -s "Summer" -n -d 2
+#
+# 5. Clean cache and exclusions:
+#    perl add2groups.pl --clean-cache -c
 #
 
 use strict;
@@ -58,7 +80,7 @@ $timeout_max = 100;
 # Global history hashes for persistent cooldowns
 my %moderated_post_history; # Stores last post time for moderated groups
 my %rate_limit_history;     # Stores cooldown end time for rate-limited groups
-my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min) <--- ADICIONADO
+my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min)
 
 # Process command-line options
 GetOptions(
@@ -202,6 +224,7 @@ if ($clean_cache) {
 # --- Flickr API Wrapper ---
 
 # Executes a Flickr API method with built-in retry logic and exponential backoff
+# Handles transient errors, moderated group responses, and permanent failures appropriately
 sub flickr_api_call {
     my ($method, $args) = @_;
     my $retry_delay = 1;
@@ -255,6 +278,7 @@ sub flickr_api_call {
 # --- File I/O Utilities ---
 
 # Writes content to a file with exclusive file locking (LOCK_EX)
+# Returns 1 on success, undef on failure
 sub _write_file {
     my ($file_path, $content) = @_;
     my $fh; 
@@ -280,6 +304,7 @@ sub _write_file {
 }
 
 # Reads content from a file with shared file locking (LOCK_SH)
+# Returns file content on success, undef on failure
 sub _read_file {
     my $file_path = shift;
     my $fh; 
@@ -310,6 +335,7 @@ sub _read_file {
 # --- Cache & Storage Subroutines ---
 
 # Saves the current group list to the groups file
+# Returns 1 on success, 0 on failure
 sub save_groups {
     my $groups_ref = shift;
     my $json = JSON->new->utf8->pretty->encode({ groups => $groups_ref });
@@ -322,6 +348,7 @@ sub save_groups {
 }
 
 # Loads the group list from the groups file
+# Returns arrayref of groups on success, undef on failure
 sub load_groups {
     debug("Loading groups from $groups_file");
     my $json_text = _read_file($groups_file) or return undef;
@@ -334,6 +361,7 @@ sub load_groups {
 }
 
 # Saves the history (cooldowns) to the history file
+# Returns 1 on success, 0 on failure
 sub save_history {
     return unless defined $history_file; 
     my $data_to_write = {
@@ -368,6 +396,7 @@ sub load_history {
 # --- Photo Cache Subroutines ---
 
 # Saves the in-memory photo cache to the persistent cache file
+# Returns 1 on success, 0 on failure
 sub save_photo_cache {
     my $json = JSON->new->utf8->encode(\%photo_cache);
     unless (_write_file(CACHE_FILE_PATH, $json)) {
@@ -378,6 +407,7 @@ sub save_photo_cache {
 }
 
 # Loads the persistent photo cache into memory
+# Purges expired entries (older than CACHE_EXPIRATION) during load
 sub load_photo_cache {
     unless (-e CACHE_FILE_PATH) {
         debug("Photo cache file not found. Creating new cache at " . CACHE_FILE_PATH);
@@ -413,6 +443,7 @@ sub load_photo_cache {
 }
 
 # Forces an update to the group membership cache for a specific photo/group combination
+# Used after successful posting to mark photo as member of group
 sub update_group_membership_cache {
     my ($photo_id, $group_id, $is_member) = @_;
     my $cache_key = "groupcheck:$photo_id:$group_id";
@@ -426,6 +457,8 @@ sub update_group_membership_cache {
 }
 
 # --- Short Cooldown Routine (20-60 min) ---
+# Applies temporary non-persistent cooldowns for various blocking conditions
+# These cooldowns are stored in memory only and lost on script restart
 sub apply_short_cooldown {
     my ($group_id, $group_name, $reason) = @_;
     my $min_delay = 20 * 60;  # 1200 seconds (20 minutes)
@@ -448,6 +481,7 @@ sub apply_short_cooldown {
 # --- Global Filtering Function ---
 
 # Filters groups based on current cooldown history (rate limits and moderated post times)
+# Returns arrayref of groups that are currently eligible for posting
 sub filter_blocked_groups {
     my ($groups_ref) = @_;
     my $now = time();
@@ -500,30 +534,66 @@ sub filter_blocked_groups {
 
 # --- Core Logic Subroutines ---
 
-# Prints the script usage and help message
+# Prints the script usage and help message with detailed examples
 sub show_usage {
     print "Usage: $0 [OPTIONS]";
-    print "Options:";
-    printf "  %-20s %s\n", "-h, --help", "Show help message";
-    printf "  %-20s %s\n", "-n, --dry-run", "Simulate adding without changes";
-    printf "  %-20s %s\n", "-d, --debug", "Set debug level (0-3)";
-    printf "  %-20s %s\n", "-f, --groups-file", "Path to groups JSON file";
-    printf "  %-20s %s\n", "-H, --history-file", "Path to history JSON file";
-    printf "  %-20s %s\n", "-s, --set-pattern", "Regex for set titles";
-    printf "  %-20s %s\n", "-g, --group-pattern", "Regex for group names";
-    printf "  %-20s %s\n", "-e, --exclude", "Regex for group names to exclude from posting (temporary)";
-    printf "  %-20s %s\n", "-a, --max-age", "Max age of photo in years to consider";
-    printf "  %-20s %s\n", "-t, --timeout", "Max random pause time between posts";
-    printf "  %-20s %s\n", "-p, --persistent", "Make -e exclusion permanent (updates groups file)";
-    printf "  %-20s %s\n", "-c, --clean", "Remove all persistent exclusions from groups file";
-    printf "  %-20s %s\n", "--clean-cache", "Remove photo cache file on startup";
-    printf "  %-20s %s\n", "-i, --ignore-excludes", "Ignore all exclusion flags (temp/persistent)";
-    printf "  %-20s %s\n", "-l, --list-groups", "List all groups and their eligibility status (exits)";
-    printf "  %-20s %s\n", "--dump", "Dump group info (flickr.groups.getInfo) if name matches -g pattern (Requires -g)";
-    print "\nNOTE: Requires authentication tokens in '\$ENV{HOME}/saved-flickr.st'";
+    print "\nMAIN OPERATION MODES:";
+    print "  Posting Mode:     perl $0 -f groups.json -H history.json -s \"Set Pattern\" [OPTIONS]";
+    print "  List Groups Mode: perl $0 -f groups.json -l [GROUP OPTIONS]";
+    print "  Dump Group Mode:  perl $0 -f groups.json --dump -g \"Group Pattern\"";
+    print "  Cleanup Mode:     perl $0 --clean-cache [-c]";
+    
+    print "\nREQUIRED PARAMETERS (by mode):";
+    print "  Posting Mode:     -f, -H, -s";
+    print "  List Groups Mode: -f";
+    print "  Dump Group Mode:  -f, -g";
+    
+    print "\nOPTIONS:";
+    printf "  %-25s %s\n", "-h, --help", "Show this help message and exit";
+    printf "  %-25s %s\n", "-n, --dry-run", "Simulate posting without making changes (default: off)";
+    printf "  %-25s %s\n", "-d, --debug [LEVEL]", "Set debug level 0-3 (optional, default: 0)";
+    printf "  %-25s %s\n", "-f, --groups-file FILE", "REQUIRED: Path to groups JSON file";
+    printf "  %-25s %s\n", "-H, --history-file FILE", "REQUIRED for posting: Path to history JSON file";
+    printf "  %-25s %s\n", "-s, --set-pattern PATTERN", "REQUIRED for posting: Regex for set titles";
+    printf "  %-25s %s\n", "-g, --group-pattern PATTERN", "Regex for group names (optional)";
+    printf "  %-25s %s\n", "-e, --exclude PATTERN", "Regex for temporary group exclusion (optional)";
+    printf "  %-25s %s\n", "-a, --max-age [YEARS]", "Max photo age in years (optional, default: none)";
+    printf "  %-25s %s\n", "-t, --timeout [SECONDS]", "Max pause between posts (optional, default: 100)";
+    printf "  %-25s %s\n", "-p, --persistent", "Make -e exclusion permanent (updates groups file)";
+    printf "  %-25s %s\n", "-c, --clean", "Remove all persistent exclusions from groups file";
+    printf "  %-25s %s\n", "--clean-cache", "Remove photo cache file on startup";
+    printf "  %-25s %s\n", "-i, --ignore-excludes", "Ignore all exclusion flags (temp/persistent)";
+    printf "  %-25s %s\n", "-l, --list-groups", "List groups and exit (requires -f)";
+    printf "  %-25s %s\n", "--dump", "Dump detailed group info (requires -f and -g)";
+    
+    print "\nOPTIONAL VALUE FLAGS (can be used without value for default):";
+    print "  -d, --debug       (default: 0)";
+    print "  -a, --max-age     (default: 1 year when used without value)";
+    print "  -t, --timeout     (default: 100 seconds when used without value)";
+    
+    print "\nDETAILED EXAMPLES:";
+    print "  Post to Nature groups from Vacation sets, max 2-year old photos:";
+    print "    perl $0 -f groups.json -H history.json -s \"Vacation\" -g \"Nature\" -a 2 -d 1";
+    print "  List all Landscape groups with eligibility status:";
+    print "    perl $0 -f groups.json -l -g \"Landscape\"";
+    print "  Dry-run test with debug output:";
+    print "    perl $0 -f groups.json -H history.json -s \"Travel\" -g \"City\" -n -d 2";
+    print "  Post excluding test groups, make exclusion permanent:";
+    print "    perl $0 -f groups.json -H history.json -s \"My Photos\" -e \"test\" -p";
+    print "  Clean cache and remove all exclusions:";
+    print "    perl $0 --clean-cache -c";
+    print "  Dump detailed info for specific group:";
+    print "    perl $0 -f groups.json --dump -g \"Exact Group Name\"";
+    
+    print "\nNOTES:";
+    print "  - Requires Flickr authentication tokens in '\$ENV{HOME}/saved-flickr.st'";
+    print "  - Group list cache refreshes automatically every 24 hours";
+    print "  - Photo cache persists for 30 days with automatic expiration";
+    print "  - Script automatically restarts on fatal errors with exponential backoff";
 }
 
 # Filters the main group list based on command-line patterns and static eligibility checks
+# Returns arrayref of groups that match all filter criteria
 sub filter_eligible_groups {
     my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
     return [ grep {
@@ -541,6 +611,7 @@ sub filter_eligible_groups {
 }
 
 # Initializes the Flickr API and retrieves the user NSID
+# Returns 1 on success, 0 on failure
 sub init_flickr {
     # Calculate max age timestamp if the max-age option is used
     if (defined $max_age_years) {
@@ -564,6 +635,7 @@ sub init_flickr {
 
 # Refreshes the list of groups, fetches detailed info (like moderation status and throttle)
 # for each, and saves the updated list to the groups file.
+# Returns arrayref of updated groups on success, cached list on failure
 sub update_and_store_groups {
     my $old_groups_ref = shift;
     $old_groups_ref = load_groups() // [] unless 'ARRAY' eq ref $old_groups_ref;
@@ -632,6 +704,7 @@ sub update_and_store_groups {
 }
 
 # Manages persistent group exclusions based on command-line flags (--clean, --persistent)
+# Returns arrayref of updated groups
 sub update_local_group_exclusions {
     my $groups_ref = load_groups() // [];
     my @results;
@@ -712,6 +785,7 @@ sub dump_matching_group_info {
 }
 
 # Checks the real-time posting status and throttle limit for a group
+# Returns hashref with current posting eligibility and limit information
 sub check_posting_status {
     my ($group_id, $group_name) = @_;
     
@@ -736,6 +810,7 @@ sub check_posting_status {
 }
 
 # Selects a random photo from the list of matching photosets, using cached set pages
+# Returns hashref with photo data or undef if no suitable photo found
 sub find_random_photo {
     my ($sets_ref) = @_;
     my $PHOTOS_PER_PAGE = 250;
@@ -865,6 +940,7 @@ sub find_random_photo {
 
 # Checks if a specific photo is already a member of a group, utilizing persistent cache
 # for a 30-day validity period.
+# Returns 1 if photo is in group, 0 if not, undef on API failure
 sub is_photo_in_group {
     my ($photo_id, $group_id) = @_;
     my $cache_key = "groupcheck:$photo_id:$group_id";
