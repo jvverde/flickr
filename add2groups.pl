@@ -11,7 +11,7 @@
 #
 # USAGE:
 # perl add2groups.pl -f groups.json -H history.json -s "Set Pattern" [OPTIONS]
-# perl add2groups.pl --clean-cache  (To clear the photo cache)
+# perl add2groups.pl --clean-cache (To clear the photo cache)
 #
 
 use strict;
@@ -58,6 +58,7 @@ $timeout_max = 100;
 # Global history hashes for persistent cooldowns
 my %moderated_post_history; # Stores last post time for moderated groups
 my %rate_limit_history;     # Stores cooldown end time for rate-limited groups
+my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min) <--- ADICIONADO
 
 # Process command-line options
 GetOptions(
@@ -111,7 +112,7 @@ sub get_timestamp {
 sub get_context {
     my $i = 1;
     my @log_subs = qw(
-        get_context timestamp_message debug info success error fatal alert
+        get_context timestamp_message debug info success error fatal alert apply_short_cooldown
     );
     my %is_log_sub = map { $_ => 1 } @log_subs;
 
@@ -424,6 +425,26 @@ sub update_group_membership_cache {
     save_photo_cache();
 }
 
+# --- Short Cooldown Routine (20-60 min) --- <--- NOVO
+sub apply_short_cooldown {
+    my ($group_id, $group_name, $reason) = @_;
+    my $min_delay = 20 * 60;  # 1200 seconds (20 minutes)
+    my $max_delay = 60 * 60;  # 3600 seconds (60 minutes)
+    my $range = $max_delay - $min_delay;
+    
+    # Generate random time between min_delay and max_delay (inclusive)
+    my $pause_time = int(rand($range + 1)) + $min_delay; 
+    my $wait_until = time() + $pause_time;
+    
+    $short_cooldown_history{$group_id} = { 
+        wait_until => $wait_until, 
+        reason     => $reason || 'Unknown',
+        post_time  => time(),
+    };
+    
+    info("Group '$group_name' blocked (Reason: $reason). Applying non-persistent " . int($pause_time / 60) . " min cooldown.");
+}
+
 # --- Global Filtering Function ---
 
 # Filters groups based on current cooldown history (rate limits and moderated post times)
@@ -436,6 +457,16 @@ sub filter_blocked_groups {
         sub {
             my $gid = $item->{id};
 
+            # 0. Short Cooldown Check (Non-Persistent, 20-60 min) <--- ATUALIZADO
+            if (exists $short_cooldown_history{$gid}) {
+                if ($now < $short_cooldown_history{$gid}->{wait_until}) {
+                    debug("Group $gid blocked by non-persistent cooldown (Reason: $short_cooldown_history{$gid}->{reason}).") if defined $debug && $debug > 1; 
+                    return 0; # Still blocked by short cooldown
+                } else {
+                    delete $short_cooldown_history{$gid}; # Cooldown expired (removed from memory)
+                }
+            }
+            
             # 1. Rate Limit Cooldown Check
             if (exists $rate_limit_history{$gid}) {
                 if ($now < $rate_limit_history{$gid}->{wait_until}) {
@@ -468,6 +499,7 @@ sub filter_blocked_groups {
 
 
 # --- Core Logic Subroutines ---
+# ... (rest of helper subroutines remain unchanged) ...
 
 # Prints the script usage and help message
 sub show_usage {
@@ -745,10 +777,10 @@ sub find_random_photo {
             if (exists $photo_cache{$cache_key}) {
                 my $entry = $photo_cache{$cache_key};
                 if (time() - $entry->{timestamp} < CACHE_EXPIRATION) {
-                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if defined $debug;
+                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if defined $debug and $debug > 1;
                     $photos_on_page = $entry->{photos};
                 } else {
-                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if defined $debug;
+                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if defined $debug and $debug > 1;
                     delete $photo_cache{$cache_key};
                 }
             }
@@ -1107,6 +1139,8 @@ RESTART_LOOP: while (1) {
                     $selected_group->{limit_mode} = $status->{limit_mode};
                     $selected_group->{remaining} = $status->{remaining};
                     unless ($status->{can_post}) { 
+                        # --- NOVO: Cooldown Curto para Dynamic Block ---
+                        apply_short_cooldown($group_id, $group_name, "Dynamic Block ($status->{limit_mode} / $status->{remaining} remaining)"); 
                         debug("Skipping '$group_name' (Dynamic Block: $status->{limit_mode} or Remaining=0)") if defined $debug;
                         splice(@current_groups, $random_index, 1); 
                         next POST_ATTEMPT_LOOP;
@@ -1122,6 +1156,8 @@ RESTART_LOOP: while (1) {
                 my $photos = $response->as_hash->{photos}->{photo} || [];
                 $photos = [ $photos ] unless ref $photos eq 'ARRAY';
                 if (@$photos and $photos->[0]->{owner} eq $user_nsid) { 
+                    # --- NOVO: Cooldown Curto para Last Poster ---
+                    apply_short_cooldown($group_id, $group_name, "Last Poster Detected"); 
                     debug("Skipping '$group_name' (You are last poster)") if defined $debug;
                     splice(@current_groups, $random_index, 1); 
                     next POST_ATTEMPT_LOOP;
@@ -1163,6 +1199,13 @@ RESTART_LOOP: while (1) {
                         
                         # Immediately update the group membership cache (status: member)
                         update_group_membership_cache($photo_id, $group_id, 1);
+
+                        # --- NOVO: Aplicar Cooldown Curto (20-60 min) para grupos não moderados e sem limite ---
+                        # Condição simplificada conforme sugestão do utilizador
+                        if ($selected_group->{moderated} == 0 && $selected_group->{limit_mode} eq 'none' ) {
+                            apply_short_cooldown($group_id, $group_name, "Successful Post (Non-Limited)");
+                        }
+                        # --------------------------------------------------------------------------
 
                         # Apply cooldown for moderated groups (1 day timeout)
                         if ($selected_group->{moderated} == 1) {
