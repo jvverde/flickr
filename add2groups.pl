@@ -45,6 +45,7 @@ my %photo_cache;           # In-memory storage for photo cache
 my ($help, $dry_run, $groups_file, $set_pattern, $group_pattern, $exclude_pattern, $max_age_years, $timeout_max);
 my ($persistent_exclude, $clean_excludes, $ignore_excludes, $list_groups, $history_file);
 my ($clean_cache); # Flag to clean cache on startup
+my ($dump); # Flag to dump group info based on group_pattern
 
 # DEFAULT TIMEOUT SET TO 100
 $timeout_max = 100;
@@ -70,6 +71,7 @@ GetOptions(
     'clean-cache'         => \$clean_cache,      
     'i|ignore-excludes'   => \$ignore_excludes,
     'l|list-groups'       => \$list_groups,
+    'dump'                => \$dump, # NOVO: Opção Dump
 );
 
 # --- Constants ---
@@ -462,7 +464,15 @@ sub show_usage {
     printf "  %-20s %s\n", "-H, --history-file", "Path to history JSON file";
     printf "  %-20s %s\n", "-s, --set-pattern", "Regex for set titles";
     printf "  %-20s %s\n", "-g, --group-pattern", "Regex for group names";
+    printf "  %-20s %s\n", "-e, --exclude", "Regex for group names to exclude from posting (temporary)";
+    printf "  %-20s %s\n", "-a, --max-age", "Max age of photo in years to consider";
+    printf "  %-20s %s\n", "-t, --timeout", "Max random pause time between posts";
+    printf "  %-20s %s\n", "-p, --persistent", "Make -e exclusion permanent (updates groups file)";
+    printf "  %-20s %s\n", "-c, --clean", "Remove all persistent exclusions from groups file";
     printf "  %-20s %s\n", "--clean-cache", "Remove photo cache file on startup";
+    printf "  %-20s %s\n", "-i, --ignore-excludes", "Ignore all exclusion flags (temp/persistent)";
+    printf "  %-20s %s\n", "-l, --list-groups", "List all groups and their eligibility status (exits)";
+    printf "  %-20s %s\n", "--dump", "Dump group info (flickr.groups.getInfo) if name matches -g pattern (Requires -g)";
     print "\nNOTE: Requires authentication tokens in '\$ENV{HOME}/saved-flickr.st'";
 }
 
@@ -524,7 +534,9 @@ sub update_and_store_groups {
             alert("Failed to fetch info for '$gname' ($gid). Skipping.");
             next;
         }
-        
+
+        # NOTE: Dump logic was removed here and moved to dump_matching_group_info
+
         my $data = $response->as_hash->{group};
         my $throttle = $data->{throttle} || {};
         
@@ -610,6 +622,45 @@ sub update_local_group_exclusions {
     return \@results;
 }
 
+# --- NOVO: Sub-rotina para Dump de Grupos ---
+sub dump_matching_group_info {
+    my ($groups_list_ref, $group_match_rx) = @_;
+    
+    info("DUMP MODE: Searching for groups matching '$group_pattern'...");
+    
+    my @matching_groups = grep {
+        my $gname = $_->{name} || '';
+        $gname =~ $group_match_rx;
+    } @$groups_list_ref;
+    
+    unless (@matching_groups) {
+        alert("No groups found in $groups_file matching pattern '$group_pattern'.");
+        return;
+    }
+    
+    my $dump_count = 0;
+    foreach my $group_entry (@matching_groups) {
+        my $group_id = $group_entry->{id};
+        my $group_name = $group_entry->{name};
+        
+        info("Fetching real-time data for '$group_name' ($group_id)...");
+        
+        # Chamada API em tempo real
+        my $response = flickr_api_call('flickr.groups.getInfo', { group_id => $group_id });
+        
+        if (defined $response) {
+            info("DUMP RESULT for '$group_name' ($group_id):");
+            # Data::Dumper is needed here to show the structure
+            print Dumper($response->as_hash);
+            $dump_count++;
+        } else {
+            error("Failed to fetch info for '$group_name' ($group_id). API error.");
+        }
+    }
+    
+    info("Dump finished. Displayed info for $dump_count group(s).");
+}
+# ------------------------------------------
 
 sub check_posting_status {
     my ($group_id, $group_name) = @_;
@@ -835,9 +886,14 @@ if ($help) {
 
 unless ($groups_file) { push @missing_params, "-f (groups-file)"; }
 
-unless ($list_groups) { 
+unless ($list_groups || $dump) {
     unless ($history_file) { push @missing_params, "-H (history-file)"; }
     unless ($set_pattern) { push @missing_params, "-s (set-pattern)"; }
+}
+
+# Dump requires a group pattern
+if ($dump && !defined $group_pattern) {
+    push @missing_params, "-g (group-pattern) is required for --dump";
 }
 
 if (@missing_params) {
@@ -851,7 +907,7 @@ my $group_match_rx = eval { qr/$group_pattern/i } if defined $group_pattern;
 fatal("Invalid group pattern: $@") if $@;
 my $exclude_match_rx = eval { qr/$exclude_pattern/i } if defined $exclude_pattern;
 fatal("Invalid exclude pattern: $@") if $@;
-unless ($list_groups) { 
+unless ($list_groups || $dump) { 
     eval { qr/$set_pattern/ } if defined $set_pattern;
     fatal("Invalid set pattern: $@") if $@;
 }
@@ -863,20 +919,44 @@ if ($force_refresh) {
     update_local_group_exclusions(); 
 }
 
-# Handle list-groups mode
+# ----------------------------------------------------
+# 1. Handle DUMP Mode (Independent execution path)
+# ----------------------------------------------------
+if ($dump) {
+    unless (init_flickr()) {
+        fatal("Initial Flickr connection failed.");
+    }
+    my $groups_list_ref = load_groups();
+    
+    # Refresh group list only if cache is too old or empty
+    if (!defined $groups_list_ref or !@$groups_list_ref or (time() - $groups_list_ref->[0]->{timestamp} > GROUP_UPDATE_INTERVAL)) {
+        info("Group list cache is empty or expired. Refreshing from API...");
+        $groups_list_ref = update_and_store_groups($groups_list_ref);
+    }
+    
+    fatal("Cannot perform dump: Could not load or fetch group list.") unless defined $groups_list_ref and @$groups_list_ref;
+    
+    dump_matching_group_info($groups_list_ref, $group_match_rx);
+    exit;
+}
+# ----------------------------------------------------
+# 2. Handle LIST Mode (Independent execution path)
+# ----------------------------------------------------
 if ($list_groups) {
     unless (init_flickr()) {
         fatal("Initial Flickr connection failed.");
     }
-    my $groups_list_ref = load_groups(); # Carrega os grupos (agora já atualizados localmente se $force_refresh)
-    # Refresh cache via API if no local data exists or local data is empty
+    my $groups_list_ref = load_groups();
+    # Ensure list is up-to-date
     $groups_list_ref = update_and_store_groups($groups_list_ref) unless defined $groups_list_ref and @$groups_list_ref;
     fatal("Cannot list groups: Could not load or fetch group list.") unless defined $groups_list_ref and @$groups_list_ref;
     list_groups_report($groups_list_ref, $group_match_rx, $exclude_match_rx);
     exit;
 }
 
-# --- MASTER RESTART LOOP (Self-Healing Core) ---
+# ----------------------------------------------------
+# 3. MASTER RESTART LOOP (Main Posting Flow)
+# ----------------------------------------------------
 my $restart_attempt = 0;
 
 RESTART_LOOP: while (1) {
@@ -892,7 +972,6 @@ RESTART_LOOP: while (1) {
         
         # Load/update group list cache
         my $groups_list_ref = load_groups();
-        # FIX: Update only if cache is undefined OR empty (load_groups já traz a data atualizada se $force_refresh correu)
         $groups_list_ref = update_and_store_groups($groups_list_ref) unless defined $groups_list_ref and @$groups_list_ref;
 
         # Apply user filters
@@ -1064,7 +1143,8 @@ RESTART_LOOP: while (1) {
                             $rate_limit_history{$group_id} = { wait_until => time() + $pause_time, limit_mode => 'day' };
                             save_history();
                             alert("Group '$group_name' hit Photo limit. Applying day cooldown and removing group from cycle.");
-                        } elsif ($error_msg =~ /Content not allowed/i) {
+                        } 
+                        elsif ($error_msg =~ /Content not allowed/i) {
                             # Rejeição permanente para esta foto.
                             alert("Group '$group_name' rejected photo due to 'Content not allowed'. Removing group from cycle.");
                         } 
