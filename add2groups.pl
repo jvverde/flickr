@@ -229,7 +229,7 @@ sub flickr_api_call {
     my ($method, $args) = @_;
     my $retry_delay = 1;
 
-    debug("API CALL: $method", $args) if $debug > 0;
+    debug("API CALL: $method", $args);
 
     for my $attempt (1 .. MAX_API_RETRIES) {
         my $response = eval { $flickr->execute_method($method, $args) };
@@ -374,7 +374,7 @@ sub save_history {
         alert("Failed to save history data to $history_file.");
         return 0;
     }
-    debug("Cooldown history written to $history_file") if $debug > 1;
+    debug("Cooldown history written to $history_file") if defined $debug and $debug > 1;
     return 1;
 }
 
@@ -452,7 +452,7 @@ sub update_group_membership_cache {
         timestamp => time(),
         is_member => $is_member ? 1 : 0, # 1 for member, 0 for not member
     };
-    debug("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id") if $debug > 1;
+    debug("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id") if defined $debug and $debug > 1;
     save_photo_cache();
 }
 
@@ -494,7 +494,7 @@ sub filter_blocked_groups {
             # 0. Short Cooldown Check (Non-Persistent, 20-60 min)
             if (exists $short_cooldown_history{$gid}) {
                 if ($now < $short_cooldown_history{$gid}->{wait_until}) {
-                    debug("Group $gid blocked by non-persistent cooldown (Reason: $short_cooldown_history{$gid}->{reason}).") if $debug > 1;
+                    debug("Group $gid blocked by non-persistent cooldown (Reason: $short_cooldown_history{$gid}->{reason}).") if defined $debug and $debug > 1;
                     return 0; # Still blocked by short cooldown
                 } else {
                     delete $short_cooldown_history{$gid}; # Cooldown expired (removed from memory)
@@ -851,17 +851,17 @@ sub find_random_photo {
             if (exists $photo_cache{$cache_key}) {
                 my $entry = $photo_cache{$cache_key};
                 if (time() - $entry->{timestamp} < CACHE_EXPIRATION) {
-                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if $debug > 1;
+                    debug("CACHE HIT: Using cached photos for Set $set_id, Page $random_page") if defined $debug and $debug > 1;
                     $photos_on_page = $entry->{photos};
                 } else {
-                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if $debug > 1;
+                    debug("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.") if defined $debug and $debug > 1;
                     delete $photo_cache{$cache_key};
                 }
             }
 
             # 2. Fetch from API if cache missed or expired
             unless (defined $photos_on_page) {
-                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page") if $debug > 1;
+                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page") if defined $debug and $debug > 1;
                 
                 my $get_photos_params = { 
                     photoset_id => $set_id, 
@@ -918,7 +918,7 @@ sub find_random_photo {
                     }
 
                     if (defined $photo_timestamp && $photo_timestamp < $max_age_timestamp) {
-                        debug("PHOTO REJECTED: $selected_photo->{title} is older than max age filter (Epoch $photo_timestamp < $max_age_timestamp)") if $debug > 1;
+                        debug("PHOTO REJECTED: $selected_photo->{title} is older than max age filter (Epoch $photo_timestamp < $max_age_timestamp)") if defined $debug and $debug > 1;
                         next PHOTO_LOOP; 
                     }
                 }
@@ -951,11 +951,11 @@ sub is_photo_in_group {
         my $entry = $photo_cache{$cache_key};
         if ($now - $entry->{timestamp} < CACHE_EXPIRATION) {
             # Cache Hit: return cached result
-            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO')) if $debug > 1;
+            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO')) if defined $debug and $debug > 1;
             return $entry->{is_member};
         } else {
             # Cache Expired: delete entry and continue to API call
-            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.") if $debug > 1;
+            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.") if defined $debug and $debug > 1;
             delete $photo_cache{$cache_key};
         }
     }
