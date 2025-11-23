@@ -37,6 +37,9 @@ else
     LOG_FILE="${LOG_FILE_ARG}"
 fi
 
+# --- NEW: Derive a unique PID file from the log file path for per-instance tracking ---
+PID_FILE="${LOG_FILE%.*}.pid"
+
 # Function to run command with proper redirection
 run_command() {
     # Execute the command with proper redirection
@@ -44,45 +47,57 @@ run_command() {
     eval "exec nohup $@ >> \"$LOG_FILE\" 2>&1"
 }
 
-# 2. Check for running process
-if pgrep -f "$COMMAND_TO_RUN" > /dev/null
-then
-    echo "[$(date)] Already running. Command: '$COMMAND_TO_RUN'. Exiting." >> "$LOG_FILE"
-    exit 0
+# 2. Check for running process using PID file (replaces pgrep for reliability)
+if [ -f "$PID_FILE" ]; then
+    EXISTING_PID=$(cat "$PID_FILE")
+    if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+        echo "[$(date)] Already running (PID: $EXISTING_PID). Command: '$COMMAND_TO_RUN'. Exiting." >> "$LOG_FILE"
+        exit 0
+    else
+        # Clean up stale PID file if process is not running
+        echo "[$(date)] Stale PID file found (PID: $EXISTING_PID not running). Removing and proceeding." >> "$LOG_FILE"
+        rm -f "$PID_FILE"
+    fi
 else
-    # 3. Launch the script in the background
-
-    echo "[$(date)] NOT running. Launching: '$COMMAND_TO_RUN'..." >> "$LOG_FILE"
-    
-    # Create log directory if it doesn't exist
-    LOG_DIR=$(dirname "$LOG_FILE")
-    mkdir -p "$LOG_DIR"
-    
-    # Use PUSHD and POPD to safely manage the working directory.
-    # We use a subshell (...) to guarantee the push/pop operation is clean and isolated.
-    (
-        # Suppress output of pushd/popd commands to keep the log clean
-        pushd "$SCRIPT_DIR" &> /dev/null
-        
-        # Run the command using the function in the background
-        run_command $COMMAND_TO_RUN &
-        
-        # Capture the background process PID
-        BACKGROUND_PID=$!
-        
-        # Restore original directory (this will execute whether eval succeeds or fails)
-        popd &> /dev/null
-        
-        # Wait a moment to capture any immediate startup errors
-        sleep 2
-        
-        # Check if the background process is still running
-        if kill -0 $BACKGROUND_PID 2>/dev/null; then
-            echo "[$(date)] Command launched successfully with PID: $BACKGROUND_PID" >> "$LOG_FILE"
-        else
-            echo "[$(date)] WARNING: Command may have failed to start. Check log for errors." >> "$LOG_FILE"
-        fi
-    )
-    
-    echo "[$(date)] Command launch complete. Check '$LOG_FILE' for output." >> "$LOG_FILE"
+    echo "[$(date)] No PID file found. Proceeding to launch." >> "$LOG_FILE"
 fi
+
+# 3. Launch the script in the background
+echo "[$(date)] NOT running. Launching: '$COMMAND_TO_RUN'..." >> "$LOG_FILE"
+
+# Create log directory if it doesn't exist
+LOG_DIR=$(dirname "$LOG_FILE")
+mkdir -p "$LOG_DIR"
+
+# Use PUSHD and POPD to safely manage the working directory.
+# We use a subshell (...) to guarantee the push/pop operation is clean and isolated.
+(
+    # Suppress output of pushd/popd commands to keep the log clean
+    pushd "$SCRIPT_DIR" &> /dev/null
+    
+    # Run the command using the function in the background
+    run_command $COMMAND_TO_RUN &
+    
+    # Capture the background process PID
+    BACKGROUND_PID=$!
+    
+    # Write PID to file immediately after launch
+    echo "$BACKGROUND_PID" > "$PID_FILE"
+    
+    # Restore original directory (this will execute whether eval succeeds or fails)
+    popd &> /dev/null
+    
+    # Wait a moment to capture any immediate startup errors
+    sleep 2
+    
+    # Check if the background process is still running
+    if kill -0 $BACKGROUND_PID 2>/dev/null; then
+        echo "[$(date)] Command launched successfully with PID: $BACKGROUND_PID" >> "$LOG_FILE"
+    else
+        echo "[$(date)] WARNING: Command may have failed to start. Check log for errors." >> "$LOG_FILE"
+        # Clean up PID file on failure
+        rm -f "$PID_FILE"
+    fi
+)
+
+echo "[$(date)] Command launch complete. Check '$LOG_FILE' for output." >> "$LOG_FILE"
