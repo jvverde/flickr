@@ -861,7 +861,7 @@ sub find_random_photo {
 
             # 2. Fetch from API if cache missed or expired
             unless (defined $photos_on_page) {
-                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page");
+                debug("CACHE MISS: Fetching API for Set $set_id, Page $random_page") if $debug > 1;
                 
                 my $get_photos_params = { 
                     photoset_id => $set_id, 
@@ -890,7 +890,7 @@ sub find_random_photo {
             }
             
             unless (@$photos_on_page) { 
-                debug("Page $random_page returned no public photos.");
+                info("Page $random_page returned no public photos.");
                 next PAGE_LOOP; 
             }
 
@@ -918,7 +918,7 @@ sub find_random_photo {
                     }
 
                     if (defined $photo_timestamp && $photo_timestamp < $max_age_timestamp) {
-                        debug("PHOTO REJECTED: $selected_photo->{title} is older than max age filter (Epoch $photo_timestamp < $max_age_timestamp)");
+                        debug("PHOTO REJECTED: $selected_photo->{title} is older than max age filter (Epoch $photo_timestamp < $max_age_timestamp)") if $debug > 1;
                         next PHOTO_LOOP; 
                     }
                 }
@@ -951,11 +951,11 @@ sub is_photo_in_group {
         my $entry = $photo_cache{$cache_key};
         if ($now - $entry->{timestamp} < CACHE_EXPIRATION) {
             # Cache Hit: return cached result
-            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO'));
+            debug("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO')) if $debug > 1;
             return $entry->{is_member};
         } else {
             # Cache Expired: delete entry and continue to API call
-            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.");
+            debug("CACHE EXPIRED: Group membership entry for $cache_key is too old.") if $debug > 1;
             delete $photo_cache{$cache_key};
         }
     }
