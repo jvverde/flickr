@@ -1125,6 +1125,7 @@ RESTART_LOOP: while (1) {
                 my $selected_group = $current_groups[$random_index];
                 
                 unless (defined $selected_group && defined $selected_group->{id}) { 
+                    alert("Unexpected: selected group is missing ID. Removing from current cycle.");
                     splice(@current_groups, $random_index, 1);
                     next POST_ATTEMPT_LOOP;
                 }
@@ -1149,6 +1150,7 @@ RESTART_LOOP: while (1) {
                 # Last Poster Check: Avoid posting if the user was the last to post in the group
                 my $response = flickr_api_call('flickr.groups.pools.getPhotos', { group_id => $group_id, per_page => 1 });
                 unless (defined $response) { 
+                    alert("Failed to check last poster for group '$group_name'. Removing from current cycle.");
                     splice(@current_groups, $random_index, 1); 
                     next POST_ATTEMPT_LOOP;
                 }
@@ -1164,7 +1166,11 @@ RESTART_LOOP: while (1) {
                 
                 # Check if photo is ALREADY IN GROUP (Uses the 30-day persistent cache)
                 my $in_group_check = is_photo_in_group($photo_id, $group_id);
-                unless (defined $in_group_check) { next POST_ATTEMPT_LOOP; } # API failure
+                unless (defined $in_group_check) { 
+                    alert("Failed to check group membership for photo '$photo_title' in group '$group_name'. Removing from current cycle.");
+                    splice(@current_groups, $random_index, 1);
+                    next POST_ATTEMPT_LOOP;
+                }
                 elsif ($in_group_check) { 
                     debug("Photo '$photo_title' already in '$group_name'.");
                     splice(@current_groups, $random_index, 1); # Remove group from this photo's cycle
