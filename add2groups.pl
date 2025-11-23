@@ -236,7 +236,7 @@ sub flickr_api_call {
     my ($method, $args) = @_;
     my $retry_delay = 1;
 
-    debug("API CALL: $method", $args);
+    debug("API CALL: $method", $args) if defined $debug and $debug > 1;
 
     for my $attempt (1 .. MAX_API_RETRIES) {
         my $response = eval { $flickr->execute_method($method, $args) };
