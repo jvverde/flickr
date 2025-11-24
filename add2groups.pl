@@ -1111,6 +1111,9 @@ unless ($list_groups || $dump) {
 # Handle local group exclusion updates before main loop starts
 my $force_refresh = $clean_excludes || $persistent_exclude;
 if ($force_refresh) {
+    unless (init_flickr()) {
+        fatal("Initial Flickr connection failed.");
+    }
     update_and_store_groups();
     update_local_group_exclusions(); 
 }
