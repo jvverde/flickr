@@ -17,9 +17,14 @@ my $flickr = Flickr::API->import_storable_config($config_file);
 # usage subroutine to print help message
 sub usage {
     print "Set species number\nUsage:\n";
-    print "  $0 [-m minimal] --file countingFile\n";
-    print "  $0 [-m minimal] -f countingFile\n";
-    print "  $0 -n|--dry-run  (simulate without adding tags)\n";
+    print "  $0 --file countingFile [--min N] [--max N] [--dry-run]\n";
+    print "  $0 -f countingFile [--min N] [--max N] [-n]\n";
+    print "\nOptions:\n";
+    print "  -f, --file FILE    JSON file with counting data (required)\n";
+    print "  --min NUM          Minimum species number (default: 0)\n";
+    print "  --max NUM          Maximum species number (default: 20000)\n";
+    print "  -n, --dry-run      Simulate without adding tags\n";
+    print "  -h, --help         Show this help message\n";
     exit;
 }
 
