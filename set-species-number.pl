@@ -57,7 +57,7 @@ my $counting = $json->decode($json_text);
 
 foreach my $elem (@$counting) {
   my $n = $elem->{cnt};
-  next unless $n > $min && $n < $max;
+  next unless $n >= $min && $n <= $max;
   my $photos = $elem->{photos};
   my @ids = keys %$photos;
   next unless @ids;
