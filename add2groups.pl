@@ -81,6 +81,9 @@ $timeout_max = 100;
 my %moderated_post_history; # Stores last post time for moderated groups
 my %rate_limit_history;     # Stores cooldown end time for rate-limited groups
 my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min)
+# NOVA VARIÁVEL: Armazena IDs de grupos que sabemos ter limites (em memória durante a execução)
+my %runtime_limited_groups;
+my %photo_saturated;
 
 # Process command-line options
 GetOptions(
@@ -262,6 +265,11 @@ sub flickr_api_call {
             # Content Not Allowed (Non-transient, non-retryable)
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Content not allowed/i) {
                 alert("Non-retryable Error: '$error'. Aborting retries for $method.");
+                return $response; 
+            }            # Content Not Allowed (Non-transient, non-retryable)
+
+            if ($method eq 'flickr.groups.pools.add' and $error =~ /Photo in maximum number of pools/i) {
+                error("Non-retryable Error: '$error'. Aborting...");
                 return $response; 
             }
 
@@ -1244,6 +1252,22 @@ RESTART_LOOP: while (1) {
             
             my ($photo_id, $photo_title, $set_title, $set_id) = @$photo_data{qw/id title set_title set_id/};
             info("Selected photo '$photo_title' from set '$set_title' for this cycle.");
+            # --- NOVO BLOCO: Lógica de Foto Saturada vs. Grupos Limitados ---
+            # Verifica se esta foto está marcada na cache como 'saturated' (já atingiu max pools)
+            if (exists $photo_saturated{$photo_id}) {
+                my $total_groups = scalar(@current_groups);
+                
+                # Filtra a lista atual: Mantém apenas grupos que NÃO estão na lista de limitados
+                @current_groups = grep { !exists $runtime_limited_groups{$_->{id}} } @current_groups;
+                
+                my $removed = $total_groups - scalar(@current_groups);
+                if ($removed > 0) {
+                    alert("Photo '$photo_title' is saturated. Removed $removed 'limited' groups from target list.");
+                } else {
+                    debug("Photo is saturated, but no limited groups were in the current target list.");
+                }
+            }
+            # ----------------------------------------------------------------
 
             # 5. Main Posting Attempt Loop (Try the selected photo on groups)
             POST_ATTEMPT_LOOP: while (@current_groups) { 
@@ -1297,8 +1321,7 @@ RESTART_LOOP: while (1) {
                     alert("Failed to check group membership for photo '$photo_title' in group '$group_name'. Removing from current cycle.");
                     splice(@current_groups, $random_index, 1);
                     next POST_ATTEMPT_LOOP;
-                }
-                elsif ($in_group_check) { 
+                } elsif ($in_group_check) { 
                     debug("Photo '$photo_title' already in '$group_name'.");
                     splice(@current_groups, $random_index, 1); # Remove group from this photo's cycle
                     next POST_ATTEMPT_LOOP;
@@ -1375,8 +1398,21 @@ RESTART_LOOP: while (1) {
                             alert("Group '$group_name' hit Photo limit. Applying day cooldown and removing group from cycle.");
                         } elsif ($error_msg =~ /Content not allowed/i) {
                             alert("Group '$group_name' rejected photo due to 'Content not allowed'. Removing group from cycle.");
-                        } 
-                        
+                        } elsif ($error_msg =~ /Photo in maximum number of pools/i) {
+                            alert("Limit Triggered: Photo '$photo_title' is saturated AND Group '$group_name' has limits.");
+                            
+                            # 1. Marcar a FOTO como saturada na cache persistente
+                            # Usamos uma chave simples. Não definimos timestamp para não expirar por tempo.
+                            $photo_saturated{$photo_id} = 1;
+
+                            # 2. Marcar o GRUPO como limitado na memória de execução
+                            # Daqui para a frente, nenhuma foto 'saturada' tentará entrar neste grupo
+                            $runtime_limited_groups{$group_id} = 1;
+                            
+                            # 3. Remover este grupo da lista atual e tentar o próximo
+                            splice(@current_groups, $random_index, 1);
+                            next POST_ATTEMPT_LOOP;
+                        }
                         # On any final failure, the group is removed from the current photo's cycle
                         splice(@current_groups, $random_index, 1); 
                         next POST_ATTEMPT_LOOP; 
