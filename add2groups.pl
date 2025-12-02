@@ -81,9 +81,10 @@ $timeout_max = 100;
 my %moderated_post_history; # Stores last post time for moderated groups
 my %rate_limit_history;     # Stores cooldown end time for rate-limited groups
 my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min)
-# NOVA VARIÁVEL: Armazena IDs de grupos que sabemos ter limites (em memória durante a execução)
-my %runtime_limited_groups;
+
+# Estas duas hashes são preenchidas a partir do cache em load_photo_cache()
 my %photo_saturated;
+my %runtime_limited_groups;
 
 # Process command-line options
 GetOptions(
@@ -266,7 +267,7 @@ sub flickr_api_call {
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Content not allowed/i) {
                 alert("Non-retryable Error: '$error'. Aborting retries for $method.");
                 return $response; 
-            }            # Content Not Allowed (Non-transient, non-retryable)
+            }           
 
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Photo in maximum number of pools/i) {
                 error("Non-retryable Error: '$error'. Aborting...");
@@ -444,17 +445,33 @@ sub load_photo_cache {
     }
     %photo_cache = %{$data // {}};
     
-    # Purge expired entries upon load (entries older than CACHE_EXPIRATION)
+    # === ÚNICO CICLO: purge expired + restore saturated/limited_groups ===
     my $now = time();
-    my $expired_count = 0;
+    my @keys_to_delete = ();
+    my $expired_count   = 0;
+
     foreach my $key (keys %photo_cache) {
-        # Check general photo/page cache AND group membership cache expiration
-        if (exists $photo_cache{$key}->{timestamp} && $now - $photo_cache{$key}->{timestamp} > CACHE_EXPIRATION) {
-            delete $photo_cache{$key};
+        my $entry = $photo_cache{$key};
+
+        if (ref($entry) eq 'HASH' && exists $entry->{timestamp} && $now - $entry->{timestamp} > CACHE_EXPIRATION) {
+            push @keys_to_delete, $key;
             $expired_count++;
+            next;
+        }
+
+        if ($key =~ /^saturated:(\d+)$/) {
+            $photo_saturated{$1} = 1;
+        } elsif ($key =~ /^limited_group:(.+)$/) {
+            $runtime_limited_groups{$1} = 1;
         }
     }
-    debug("Photo cache loaded. Entries: " . scalar(keys %photo_cache) . " (Purged $expired_count expired)");
+
+    foreach my $key (@keys_to_delete) {
+        delete $photo_cache{$key};
+    }
+
+    debug("Photo cache loaded. Entries: " . scalar(keys %photo_cache) . " (Purged $expired_count expired, restored " . scalar(keys %photo_saturated) . " saturated photos e " . scalar(keys %runtime_limited_groups) . " limited groups)");
+    save_photo_cache() if $expired_count > 0;  # grava logo limpo
 }
 
 # Forces an update to the group membership cache for a specific photo/group combination
@@ -1214,7 +1231,7 @@ RESTART_LOOP: while (1) {
         POST_CYCLE_LOOP: while (1) { 
             
             # Check for stale group cache and refresh if needed
-            if ($groups_list_ref->[0] and time() - $groups_list_ref->[0]->{timestamp} > GROUP_UPDATE_INTERVAL) {
+            if ($groups_list_ref->[0] and time() - $groups_list_ref->[0]->{->timestamp} > GROUP_UPDATE_INTERVAL) {
                 debug("Group list cache expired. Initiating update.");
                 
                 my $new_groups_ref = update_and_store_groups();
@@ -1252,19 +1269,16 @@ RESTART_LOOP: while (1) {
             
             my ($photo_id, $photo_title, $set_title, $set_id) = @$photo_data{qw/id title set_title set_id/};
             info("Selected photo '$photo_title' from set '$set_title' for this cycle.");
-            # --- NOVO BLOCO: Lógica de Foto Saturada vs. Grupos Limitados ---
-            # Verifica se esta foto está marcada na cache como 'saturated' (já atingiu max pools)
+            
+            # --- NOVO BLOCO: Lógica de Foto Saturada vs. Grupos Limitados (com persistência) ---
             if (exists $photo_saturated{$photo_id}) {
                 my $total_groups = scalar(@current_groups);
                 
-                # Filtra a lista atual: Mantém apenas grupos que NÃO estão na lista de limitados
                 @current_groups = grep { !exists $runtime_limited_groups{$_->{id}} } @current_groups;
                 
                 my $removed = $total_groups - scalar(@current_groups);
                 if ($removed > 0) {
-                    alert("Photo '$photo_title' is saturated. Removed $removed 'limited' groups from target list.");
-                } else {
-                    debug("Photo is saturated, but no limited groups were in the current target list.");
+                    alert("Foto saturada detectada → removidos $removed grupos com limite do ciclo atual.");
                 }
             }
             # ----------------------------------------------------------------
@@ -1401,15 +1415,15 @@ RESTART_LOOP: while (1) {
                         } elsif ($error_msg =~ /Photo in maximum number of pools/i) {
                             alert("Limit Triggered: Photo '$photo_title' is saturated AND Group '$group_name' has limits.");
                             
-                            # 1. Marcar a FOTO como saturada na cache persistente
-                            # Usamos uma chave simples. Não definimos timestamp para não expirar por tempo.
-                            $photo_saturated{$photo_id} = 1;
+                            # Persistente no cache de 30 dias
+                            $photo_cache{"saturated:$photo_id"} = { timestamp => time() };
+                            $photo_cache{"limited_group:$group_id"} = { timestamp => time() };
+                            save_photo_cache();
 
-                            # 2. Marcar o GRUPO como limitado na memória de execução
-                            # Daqui para a frente, nenhuma foto 'saturada' tentará entrar neste grupo
+                            # Também atualiza as hashes em memória para uso imediato
+                            $photo_saturated{$photo_id} = 1;
                             $runtime_limited_groups{$group_id} = 1;
                             
-                            # 3. Remover este grupo da lista atual e tentar o próximo
                             splice(@current_groups, $random_index, 1);
                             next POST_ATTEMPT_LOOP;
                         }
