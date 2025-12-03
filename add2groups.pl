@@ -10,30 +10,69 @@
 # rate limits, and moderation queues.
 #
 # FEATURES:
-# - Self-healing restart loop with exponential backoff
-# - Persistent photo and group membership cache (30-day validity)
+# - Self-healing restart loop with exponential backoff on fatal errors
+# - Persistent photo and group membership cache with 30-day validity
 # - Dynamic group eligibility checking with real-time throttle status
 # - Multiple cooldown mechanisms (short-term, rate limit, moderated groups)
 # - Configurable filters for sets, groups, and photo age
-# - Dry-run mode for testing
-# - Detailed debug logging with multiple verbosity levels
+# - Dry-run mode for safe testing without posting
+# - Detailed debug logging with multiple verbosity levels (0-3)
+# - JSON-based persistent storage for groups and cooldown history
+# - Smart photo selection with cache-aware random sampling
+# - Proactive photo limit filtering (60-group maximum with opt-out groups)
+# - Automated group list refresh every 24 hours
+# - Colored terminal output with timestamps and context information
+#
+# DEPENDENCIES:
+# - Perl 5.10+
+# - Flickr::API
+# - JSON
+# - Time::Piece, Time::HiRes, Time::Local
+# - Getopt::Long
+# - Term::ANSIColor
+#
+# AUTHENTICATION:
+# Requires Flickr API authentication tokens stored in:
+#   $ENV{HOME}/saved-flickr.st
+#
+# CACHE FILES:
+# - Group list: JSON file specified by -f flag (default: groups.json)
+# - Cooldown history: JSON file specified by -H flag (default: history.json)
+# - Photo cache: /tmp/cache-add2groups.json (30-day expiration)
 #
 # USAGE EXAMPLES:
 #
-# 1. Normal posting mode (requires -f, -H, -s):
+# 1. Normal posting mode (post photos from sets matching "Vacation" or "Travel"
+#    to groups containing "Nature", max photo age 2 years, debug level 1):
 #    perl add2groups.pl -f groups.json -H history.json -s "Vacation|Travel" -g "Nature" -a 2 -d 1
 #
-# 2. List groups mode (requires -f):
+# 2. List groups mode (show all groups matching "Landscape" with eligibility status):
 #    perl add2groups.pl -f groups.json -l -g "Landscape"
 #
-# 3. Dump group info mode (requires -f and -g):
+# 3. Dump detailed group info (fetch real-time API data for specific group):
 #    perl add2groups.pl -f groups.json --dump -g "Specific Group Name"
 #
-# 4. Dry-run simulation:
+# 4. Dry-run simulation (test posting logic without actual API calls):
 #    perl add2groups.pl -f groups.json -H history.json -s "Summer" -n -d 2
 #
-# 5. Clean cache and exclusions:
+# 5. Clean cache and remove all persistent exclusions:
 #    perl add2groups.pl --clean-cache -c
+#
+# 6. Post with temporary exclusions (exclude groups matching "test" pattern):
+#    perl add2groups.pl -f groups.json -H history.json -s "My Photos" -e "test"
+#
+# 7. Make exclusions permanent (update groups file with exclusion patterns):
+#    perl add2groups.pl -f groups.json -H history.json -s "My Photos" -e "test" -p
+#
+# 8. Post with custom timeout between attempts (max 300 seconds):
+#    perl add2groups.pl -f groups.json -H history.json -s "Travel" -t 300
+#
+# NOTES:
+# - Group list cache automatically refreshes when older than 24 hours
+# - Photo cache entries expire after 30 days and are automatically purged
+# - Short-term cooldowns (20-60 minutes) are memory-only and lost on restart
+# - Rate-limit and moderated group cooldowns persist across script runs
+# - Script auto-restarts on fatal errors with exponential backoff up to 24 hours
 #
 
 use strict;
@@ -51,42 +90,39 @@ use feature 'say';
 use Time::Piece; 
 use Term::ANSIColor qw(:constants colored); 
 
-# Set output record separator to always print a newline
+# Set output record separator to always print a newline after each print statement
 $\ = "\n";
 
 # --- OUTPUT BUFFERING FIX ---
 # Disable output buffering for STDOUT and STDERR to ensure immediate logging
+# This is crucial for real-time monitoring in cron jobs or terminal
 $| = 1;
 select(STDERR); $| = 1; select(STDOUT);
 
 # --- Global Variables ---
-my $flickr;                # Flickr API object
-my $user_nsid;             # Authenticated user NSID
-my $debug;                 # Debug level (0-3)
+my $flickr;                # Flickr API object (initialized in init_flickr)
+my $user_nsid;             # Authenticated user NSID (retrieved after login)
+my $debug;                 # Debug level (0-3, higher = more verbose)
 my $max_age_timestamp;     # Unix timestamp for filtering photos older than max-age
-my @all_eligible_groups;   # List of groups matching static criteria
-my @matching_sets;         # List of photosets matching the user pattern
-my %photo_cache;           # In-memory storage for photo and group membership cache
+my @all_eligible_groups;   # List of groups matching static criteria (pattern, exclusions)
+my @matching_sets;         # List of photosets matching the user-provided pattern
+my %photo_cache;           # In-memory storage for photo and group membership cache (hierarchical)
 
 # --- Command-line options variables ---
 my ($help, $dry_run, $groups_file, $set_pattern, $group_pattern, $exclude_pattern, $max_age_years, $timeout_max);
 my ($persistent_exclude, $clean_excludes, $ignore_excludes, $list_groups, $history_file);
-my ($clean_cache); # Flag to clear photo cache on startup
-my ($dump); # Flag to dump detailed group info
+my ($clean_cache); # Flag to clear photo cache on startup (--clean-cache)
+my ($dump); # Flag to dump detailed group info (--dump)
 
-# DEFAULT TIMEOUT SET TO 100 seconds
+# DEFAULT TIMEOUT SET TO 100 seconds (maximum random pause between posting cycles)
 $timeout_max = 100;
 
-# Global history hashes for persistent cooldowns
-my %moderated_post_history; # Stores last post time for moderated groups
-my %rate_limit_history;     # Stores cooldown end time for rate-limited groups
-my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min)
+# Global history hashes for persistent cooldowns (loaded/saved from history file)
+my %moderated_post_history; # Stores last post time for moderated groups (1-day cooldown)
+my %rate_limit_history;     # Stores cooldown end time for rate-limited groups (calculated based on limit mode)
+my %short_cooldown_history; # Stores non-persistent (in-memory) cooldowns (20-60 min, lost on restart)
 
-# Estas duas hashes são preenchidas a partir do cache em load_photo_cache()
-my %photo_saturated;
-my %runtime_limited_groups;
-
-# Process command-line options
+# Process command-line options with Getopt::Long
 GetOptions(
     'h|help'              => \$help,
     'n|dry-run'           => \$dry_run,
@@ -116,25 +152,27 @@ use constant SECONDS_IN_DAY   => 24 * 60 * 60;
 use constant SECONDS_IN_WEEK  => 7 * SECONDS_IN_DAY;
 use constant SECONDS_IN_MONTH => 30 * SECONDS_IN_DAY;
 
-use constant MAX_API_RETRIES      => 5;   # Max attempts for API calls
-use constant API_RETRY_MULTIPLIER => 8;   # Exponential backoff factor for API retries
+use constant MAX_API_RETRIES      => 5;   # Max attempts for API calls before giving up
+use constant API_RETRY_MULTIPLIER => 8;   # Exponential backoff factor for API retries (1, 8, 64, 512, 4096 seconds)
 
-use constant MAX_RESTART_DELAY    => 24 * 60 * 60; # Max delay for fatal script restart
-use constant RESTART_RETRY_BASE   => 60;           # Base delay for restart loop
+use constant MAX_RESTART_DELAY    => 24 * 60 * 60; # Max delay for fatal script restart (24 hours)
+use constant RESTART_RETRY_BASE   => 60;           # Base delay for restart loop (60 seconds)
 use constant RESTART_RETRY_FACTOR => 2;            # Factor for exponential restart backoff
 
 # --- Cache Constants ---
-use constant CACHE_FILE_PATH    => '/tmp/cache-add2groups.json'; # Path to persistent photo cache file
-use constant CACHE_EXPIRATION   => 30 * 24 * 60 * 60; # Validity for photo and group membership cache (30 Days)
+use constant CACHE_FILE_PATH     => '/tmp/cache-add2groups.json'; # Path to persistent photo cache file
+use constant CACHE_EXPIRATION    => 30 * 24 * 60 * 60; # Validity for photo and group membership cache (30 Days)
+use constant PHOTO_INFO_UPDATE_INTERVAL => 24 * 60 * 60; # 1 day to update photo group information (flickr.photos.getAllContexts)
 
 # --- Helper Subroutines for Colored Output & Timestamps ---
 
-# Gets current timestamp string
+# Gets current timestamp string in YYYY-MM-DD HH:MM:SS format
 sub get_timestamp {
     return "[" . localtime->strftime("%Y-%m-%d %H:%M:%S") . "]";
 }
 
 # Determines the context (file and line) of the actual calling subroutine, skipping logging wrappers
+# This helps debug which part of the code generated a log message
 sub get_context {
     my $i = 1;
     my @log_subs = qw(
@@ -142,17 +180,19 @@ sub get_context {
     );
     my %is_log_sub = map { $_ => 1 } @log_subs;
 
+    # Walk up the call stack until we find a non-logging subroutine
     while ($i < 10) { 
         my ($package, $file, $line, $sub) = caller($i);
         last unless defined $file;
         $sub =~ s/^.*::(\w+)$/$1/;
         unless (exists $is_log_sub{$sub}) {
-            $file =~ s/^.+\///; 
+            $file =~ s/^.+\///; # Strip path, keep filename only
             return "($file:$line)";
         }
         $i++;
     }
     
+    # Fallback: use the immediate caller if we can't find a non-logging sub
     my ($package, $file, $line) = caller(1);
     if (defined $file) {
         $file =~ s/^.+\///;
@@ -161,7 +201,8 @@ sub get_context {
     return "(unknown:?)";
 }
 
-# Prints a colored, timestamped message
+# Prints a colored, timestamped message to the specified filehandle
+# Parameters: level (string), message (string), color (string or arrayref), handle (filehandle)
 sub timestamp_message {
     my ($level, $message, $color, $handle) = @_;
     my $context = get_context();
@@ -177,6 +218,7 @@ sub timestamp_message {
 }
 
 # Debug logging. Prints only if $debug is defined. Prints $data if $debug > 2.
+# Used for detailed internal state inspection.
 sub debug {
     my ($message, $data) = @_;
     return unless defined $debug;
@@ -185,44 +227,45 @@ sub debug {
 }
 
 # Debug level 1 logging (only if $debug > 1)
+# Less verbose than debug(), used for important but not overwhelming information.
 sub debug1 {
     my ($message) = @_;
     return unless defined $debug and $debug > 1;
     debug($message);
 }
 
-# Info level logging
+# Info level logging - general operational messages
 sub info {
     my $message = shift;
     timestamp_message("INFO", $message, 'white', *STDOUT);
 }
 
-# Success level logging
+# Success level logging - for successful operations (e.g., photo posted)
 sub success {
     my $message = shift;
     timestamp_message("SUCCESS", $message, 'green', *STDOUT);
 }
 
-# Error level logging (to STDERR)
+# Error level logging (to STDERR) - for non-fatal errors that don't stop execution
 sub error {
     my $message = shift;
     timestamp_message("ERROR", $message, 'red', *STDERR);
 }
 
-# Fatal error logging (to STDERR) and crash indication
+# Fatal error logging (to STDERR) and crash indication - for errors that halt the current cycle
 sub fatal {
     my $message = shift;
     timestamp_message("FATAL", $message, ['bold', 'red'], *STDERR);
 }
 
-# Alert/Warning level logging (to STDERR)
+# Alert/Warning level logging (to STDERR) - for important warnings that don't stop execution
 sub alert {
     my $message = shift;
     timestamp_message("ALERT", $message, ['bold', 'yellow'], *STDERR);
 }
 
 # --- Cleanup Logic on Startup ---
-
+# If --clean-cache flag is provided, remove the persistent photo cache file before loading
 if ($clean_cache) {
     if (-e CACHE_FILE_PATH) {
         unlink CACHE_FILE_PATH;
@@ -236,9 +279,11 @@ if ($clean_cache) {
 
 # Executes a Flickr API method with built-in retry logic and exponential backoff
 # Handles transient errors, moderated group responses, and permanent failures appropriately
+# Parameters: $method (API method name), $args (hashref of arguments)
+# Returns: API response object on success, undef on permanent failure after retries
 sub flickr_api_call {
     my ($method, $args) = @_;
-    my $retry_delay = 1;
+    my $retry_delay = 1; # Start with 1 second delay for first retry
 
     debug("API CALL: $method", $args) if defined $debug and $debug > 1;
 
@@ -269,11 +314,13 @@ sub flickr_api_call {
                 return $response; 
             }           
 
+            # Photo already in maximum number of pools (60 groups limit)
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Photo in maximum number of pools/i) {
                 error("Non-retryable Error: '$error'. Aborting...");
                 return $response; 
             }
 
+            # If we've exhausted all retry attempts, give up with fatal error
             if ($attempt == MAX_API_RETRIES) {
                 fatal("Failed to execute $method after " . MAX_API_RETRIES . " attempts: $error");
                 return undef; 
@@ -288,13 +335,15 @@ sub flickr_api_call {
         }
         return $response; # Success
     }
-    return undef; # All retries failed
+    return undef; # All retries failed (should never reach here due to fatal above)
 }
 
 # --- File I/O Utilities ---
 
 # Writes content to a file with exclusive file locking (LOCK_EX)
-# Returns 1 on success, undef on failure
+# Prevents multiple instances from writing simultaneously
+# Parameters: $file_path (string), $content (string)
+# Returns: 1 on success, undef on failure
 sub _write_file {
     my ($file_path, $content) = @_;
     my $fh; 
@@ -320,7 +369,9 @@ sub _write_file {
 }
 
 # Reads content from a file with shared file locking (LOCK_SH)
-# Returns file content on success, undef on failure
+# Allows multiple readers simultaneously
+# Parameters: $file_path (string)
+# Returns: file content on success, undef on failure
 sub _read_file {
     my $file_path = shift;
     my $fh; 
@@ -350,8 +401,9 @@ sub _read_file {
 
 # --- Cache & Storage Subroutines ---
 
-# Saves the current group list to the groups file
-# Returns 1 on success, 0 on failure
+# Saves the current group list to the groups file (specified by -f flag)
+# Parameters: $groups_ref (arrayref of group hashes)
+# Returns: 1 on success, 0 on failure
 sub save_groups {
     my $groups_ref = shift;
     my $json = JSON->new->utf8->pretty->encode({ groups => $groups_ref });
@@ -363,8 +415,8 @@ sub save_groups {
     return 1;
 }
 
-# Loads the group list from the groups file
-# Returns arrayref of groups on success, undef on failure
+# Loads the group list from the groups file (specified by -f flag)
+# Returns: arrayref of groups on success, undef on failure
 sub load_groups {
     debug("Loading groups from $groups_file");
     my $json_text = _read_file($groups_file) or return undef;
@@ -376,8 +428,9 @@ sub load_groups {
     return $data->{groups} // [];
 }
 
-# Saves the history (cooldowns) to the history file
-# Returns 1 on success, 0 on failure
+# Saves the history (cooldowns) to the history file (specified by -H flag)
+# Stores moderated_post_history and rate_limit_history with timestamp
+# Returns: 1 on success, 0 on failure
 sub save_history {
     return unless defined $history_file; 
     my $data_to_write = {
@@ -394,7 +447,9 @@ sub save_history {
     return 1;
 }
 
-# Loads the history (cooldowns) from the history file
+# Loads the history (cooldowns) from the history file (specified by -H flag)
+# Populates %moderated_post_history and %rate_limit_history global hashes
+# No return value (dies silently on error)
 sub load_history {
     return unless defined $history_file; 
     debug("Loading history from $history_file");
@@ -409,10 +464,78 @@ sub load_history {
     debug("History loaded. Moderated count: " . scalar(keys %moderated_post_history));
 }
 
-# --- Photo Cache Subroutines ---
+# --- Photo Cache Subroutines (REORGANIZED HIERARCHICAL STRUCTURE) ---
 
-# Saves the in-memory photo cache to the persistent cache file
-# Returns 1 on success, 0 on failure
+# REORGANIZED CACHE STRUCTURE:
+# %photo_cache = (
+#     photo => {
+#         $photo_id => {
+#             last_checked => ...,     # Used for expiration (30 days) and update (1 day)
+#             groups => { $group_id => 1, ... },
+#             group_count => X,
+#         },
+#         ...
+#     },
+#     sets => {
+#         $set_id => {
+#             $page_number => {
+#                 timestamp => ...,
+#                 photos => [ ... ],
+#             },
+#             ...
+#         },
+#         ...
+#     }
+# );
+
+# Migrates old cache format to new hierarchical structure
+# Old format had flat keys like "groupcheck:photo_id:group_id" and "set_id:page_number"
+# Parameters: $old_cache (hashref of old cache data)
+# Returns: %new_cache (hash with new hierarchical structure)
+sub migrate_old_cache {
+    my ($old_cache) = @_;
+    my %new_cache = ( photo => {}, sets => {} );
+    my $migrated_photo_count = 0;
+    my $migrated_set_count = 0;
+    
+    foreach my $key (keys %$old_cache) {
+        if ($key =~ /^groupcheck:(\d+):(.+)$/) {
+            my ($photo_id, $group_id) = ($1, $2);
+            
+            # Initialize photo entry if it doesn't exist
+            unless (exists $new_cache{photo}{$photo_id}) {
+                $new_cache{photo}{$photo_id} = {
+                    last_checked => time(),
+                    groups => {},
+                    group_count => 0,
+                };
+            }
+            
+            # Add group if is_member was true in old cache
+            if ($old_cache->{$key}{is_member}) {
+                $new_cache{photo}{$photo_id}{groups}{$group_id} = 1;
+                $new_cache{photo}{$photo_id}{group_count}++;
+            }
+            $migrated_photo_count++;
+        }
+        elsif ($key =~ /^(\d+):(\d+)$/) {
+            # It's a set key (format set_id:page)
+            my ($set_id, $page_number) = ($1, $2);
+            my $entry = $old_cache->{$key};
+            if (ref($entry) eq 'HASH' && exists $entry->{photos}) {
+                $new_cache{sets}{$set_id}{$page_number} = $entry;
+                $migrated_set_count++;
+            }
+        }
+        # Ignore other old keys (saturated:, limited_group:)
+    }
+    
+    info("Migration complete: $migrated_photo_count photo entries, $migrated_set_count set entries.");
+    return %new_cache;
+}
+
+# Saves the in-memory photo cache to the persistent cache file (CACHE_FILE_PATH)
+# Returns: 1 on success, 0 on failure
 sub save_photo_cache {
     my $json = JSON->new->utf8->encode(\%photo_cache);
     unless (_write_file(CACHE_FILE_PATH, $json)) {
@@ -422,12 +545,14 @@ sub save_photo_cache {
     return 1;
 }
 
-# Loads the persistent photo cache into memory
+# Loads the persistent photo cache into memory (%photo_cache)
 # Purges expired entries (older than CACHE_EXPIRATION) during load
+# If old cache format detected, automatically migrates to new structure
+# No return value
 sub load_photo_cache {
     unless (-e CACHE_FILE_PATH) {
         debug("Photo cache file not found. Creating new cache at " . CACHE_FILE_PATH);
-        %photo_cache = (); 
+        %photo_cache = ( photo => {}, sets => {} ); 
         save_photo_cache(); 
         return;
     }
@@ -440,57 +565,285 @@ sub load_photo_cache {
     my $data = eval { decode_json($json_text) };
     if ($@) {
         error("Error decoding photo cache JSON: $@. Starting with empty cache.");
-        %photo_cache = (); 
+        %photo_cache = ( photo => {}, sets => {} ); 
         return;
     }
-    %photo_cache = %{$data // {}};
     
-    # === ÚNICO CICLO: purge expired + restore saturated/limited_groups ===
+    # If loaded JSON doesn't have the new structure, migrate it
+    if (exists $data->{photo} || exists $data->{sets}) {
+        %photo_cache = %$data;
+    } else {
+        # Old structure: migrate
+        info("Old cache structure detected. Migrating to new structure...");
+        %photo_cache = migrate_old_cache($data);
+        save_photo_cache();
+        return;
+    }
+    
+    # Purge expired entries from both photo and set sections
     my $now = time();
-    my @keys_to_delete = ();
-    my $expired_count   = 0;
-
-    foreach my $key (keys %photo_cache) {
-        my $entry = $photo_cache{$key};
-
-        if (ref($entry) eq 'HASH' && exists $entry->{timestamp} && $now - $entry->{timestamp} > CACHE_EXPIRATION) {
-            push @keys_to_delete, $key;
+    my $expired_count = 0;
+    
+    # Purge in photo section (using last_checked timestamp)
+    foreach my $photo_id (keys %{$photo_cache{photo}}) {
+        my $entry = $photo_cache{photo}{$photo_id};
+        if (ref($entry) eq 'HASH' && exists $entry->{last_checked} && 
+            $now - $entry->{last_checked} > CACHE_EXPIRATION) {
+            delete $photo_cache{photo}{$photo_id};
             $expired_count++;
-            next;
-        }
-
-        if ($key =~ /^saturated:(\d+)$/) {
-            $photo_saturated{$1} = 1;
-        } elsif ($key =~ /^limited_group:(.+)$/) {
-            $runtime_limited_groups{$1} = 1;
         }
     }
-
-    foreach my $key (@keys_to_delete) {
-        delete $photo_cache{$key};
+    
+    # Purge in sets section (hierarchical structure)
+    foreach my $set_id (keys %{$photo_cache{sets}}) {
+        foreach my $page_number (keys %{$photo_cache{sets}{$set_id}}) {
+            my $entry = $photo_cache{sets}{$set_id}{$page_number};
+            if (ref($entry) eq 'HASH' && exists $entry->{timestamp} && 
+                $now - $entry->{timestamp} > CACHE_EXPIRATION) {
+                delete $photo_cache{sets}{$set_id}{$page_number};
+                $expired_count++;
+            }
+        }
+        # If set became empty after purge, remove it too
+        if (scalar keys %{$photo_cache{sets}{$set_id}} == 0) {
+            delete $photo_cache{sets}{$set_id};
+        }
     }
-
-    debug("Photo cache loaded. Entries: " . scalar(keys %photo_cache) . " (Purged $expired_count expired, restored " . scalar(keys %photo_saturated) . " saturated photos e " . scalar(keys %runtime_limited_groups) . " limited groups)");
-    save_photo_cache() if $expired_count > 0;  # grava logo limpo
+    
+    if ($expired_count > 0) {
+        save_photo_cache();
+    }
+    
+    debug("Photo cache loaded. Photos: " . scalar(keys %{$photo_cache{photo}}) . 
+          ", Sets: " . scalar(keys %{$photo_cache{sets}}) . 
+          " (Purged $expired_count expired)");
 }
 
-# Forces an update to the group membership cache for a specific photo/group combination
-# Used after successful posting to mark photo as member of group
-sub update_group_membership_cache {
-    my ($photo_id, $group_id, $is_member) = @_;
-    my $cache_key = "groupcheck:$photo_id:$group_id";
+# Gets/updates complete photo group information from cache or API
+# Automatically refreshes if cache is older than PHOTO_INFO_UPDATE_INTERVAL (1 day)
+# or if the photo entry doesn't exist in cache
+# Parameters: $photo_id (string)
+# Returns: hashref with photo info on success, undef on failure
+sub get_photo_group_info {
+    my ($photo_id) = @_;
+    my $now = time();
     
-    $photo_cache{$cache_key} = {
-        timestamp => time(),
-        is_member => $is_member ? 1 : 0, # 1 for member, 0 for not member
-    };
-    debug1("Forced cache update: Photo $photo_id is_member=" . ($is_member ? '1' : '0') . " in Group $group_id");
-    save_photo_cache();
+    # Check if we have recent information (less than 1 day old) or if entry doesn't exist
+    if (!exists $photo_cache{photo}{$photo_id} || 
+        $now - $photo_cache{photo}{$photo_id}{last_checked} >= PHOTO_INFO_UPDATE_INTERVAL) {
+        
+        # Fetch current information from API (flickr.photos.getAllContexts)
+        my $response = flickr_api_call('flickr.photos.getAllContexts', { 
+            photo_id => $photo_id 
+        });
+        
+        unless (defined $response) {
+            error("Failed to get contexts for photo $photo_id");
+            return undef;
+        }
+        
+        my $data = $response->as_hash;
+        my %groups_map;
+        my $group_count = 0;
+        
+        # Process groups (pools)
+        my $pools = $data->{pool} || [];
+        $pools = [ $pools ] unless ref $pools eq 'ARRAY';
+        
+        foreach my $pool (@$pools) {
+            $groups_map{$pool->{id}} = 1;
+            $group_count++;
+        }
+        
+        # Update cache with new information
+        $photo_cache{photo}{$photo_id} = {
+            last_checked => $now,
+            groups => \%groups_map,
+            group_count => $group_count,
+        };
+        
+        save_photo_cache();
+        debug("Updated group info for photo $photo_id: $group_count groups");
+        
+    } else {
+        debug1("Using cached group info for photo $photo_id");
+    }
+    
+    return $photo_cache{photo}{$photo_id};
+}
+
+# Filters groups where the photo is NOT already a member
+# Parameters: $photo_id (string), $photo_title (string), $groups (arrayref)
+# Returns: arrayref of groups where photo is NOT a member
+# Logs internally for groups where photo is already a member
+sub filter_groups_where_photo_not_in {
+    my ($photo_id, $photo_title, $groups) = @_;
+    
+    my $selected_groups = [];
+    
+    foreach my $group (@$groups) {
+        my $present = is_photo_in_group($photo_id, $group->{id});
+        unless (defined $present) { 
+            # If check failed, remove group for safety
+            alert("Failed to check group membership for photo '$photo_title' in group '$group->{name}'. Removing group from current cycle.");
+            next;
+        } elsif ($present) { 
+            debug1("Photo '$photo_title' already in group '$group->{name}'. Removing group from current cycle.");
+        } else {
+            push @$selected_groups, $group;
+        }
+    }
+    
+    # Return ONLY groups where photo is NOT already a member
+    return $selected_groups;
+}
+
+# Filters groups based on photo limit (60 groups maximum) with priority
+# Prioritizes groups that respect the limit (photo_limit_opt_out = 0)
+# If no groups respect the limit, uses those that ignore it (photo_limit_opt_out = 1)
+# If photo has 60+ groups, can only use groups that ignore the limit (photo_limit_opt_out = 1)
+# Parameters: $photo_id (string), $groups_ref (arrayref)
+# Returns: filtered arrayref of groups
+sub filter_groups_by_photo_limit {
+    my ($photo_id, $groups_ref) = @_;
+    
+    # Get current photo info (automatically uses cache if recent)
+    my $photo_info = get_photo_group_info($photo_id);
+    return $groups_ref unless defined $photo_info;
+    
+    my $current_count = $photo_info->{group_count} || 0;
+    
+    # Separate groups into two categories
+    my @groups_respecting_limit;   # photo_limit_opt_out = 0 (respect limit)
+    my @groups_ignoring_limit;     # photo_limit_opt_out = 1 (ignore limit)
+    
+    foreach my $group (@$groups_ref) {
+        if ($group->{photo_limit_opt_out}) {
+            push @groups_ignoring_limit, $group;
+        } else {
+            push @groups_respecting_limit, $group;
+        }
+    }
+    
+    # Case 1: Photo has less than 60 groups
+    if ($current_count < 60) {
+        # First try to use groups that RESPECT the limit
+        if (@groups_respecting_limit) {
+            debug1("Photo $photo_id has $current_count groups (<60) - using " . 
+                   scalar(@groups_respecting_limit) . " groups that respect the limit (photo_limit_opt_out=0)");
+            return \@groups_respecting_limit;
+        } 
+        # If no groups respect the limit, use those that ignore it
+        elsif (@groups_ignoring_limit) {
+            debug1("Photo $photo_id has $current_count groups (<60) - no groups respect the limit. " .
+                   "Using " . scalar(@groups_ignoring_limit) . " groups that ignore the limit (photo_limit_opt_out=1)");
+            return \@groups_ignoring_limit;
+        }
+        # If no groups of either type
+        else {
+            debug1("Photo $photo_id has $current_count groups (<60) - no groups available after filter");
+            return [];
+        }
+    }
+    # Case 2: Photo has 60+ groups
+    else {
+        # Can only use groups that IGNORE the limit
+        if (@groups_ignoring_limit) {
+            debug1("Photo $photo_id has $current_count groups (>=60) - using " . 
+                   scalar(@groups_ignoring_limit) . " groups that ignore the limit (photo_limit_opt_out=1)");
+            return \@groups_ignoring_limit;
+        } else {
+            alert("Photo $photo_id has $current_count groups (>=60) and no groups ignore the limit. " .
+                  "No groups available.");
+            return [];
+        }
+    }
+}
+
+# Checks if photo is in a specific group (uses new cache structure)
+# Parameters: $photo_id (string), $group_id (string)
+# Returns: 1 if photo is in group, 0 if not, undef on error
+sub is_photo_in_group {
+    my ($photo_id, $group_id) = @_;
+    
+    # Get current photo info (uses cache if recent, fetches from API if expired)
+    my $photo_info = get_photo_group_info($photo_id);
+    return undef unless defined $photo_info;
+    
+    # Check if group is in the list using !!
+    my $is_member = !!(exists $photo_info->{groups}{$group_id});
+    
+    debug1("Group membership check: Photo $photo_id in group $group_id = " . 
+           ($is_member ? 'YES' : 'NO'));
+    
+    return $is_member;
+}
+
+# Updates photo cache locally after successful posting (non-moderated)
+# This avoids an API call to flickr.photos.getAllContexts immediately after posting
+# Parameters: $photo_id (string), $group_id (string)
+# No return value
+sub update_photo_cache_after_posting {
+    my ($photo_id, $group_id) = @_;
+    
+    # Ensure we have photo structure
+    my $photo_info = get_photo_group_info($photo_id);
+    unless (defined $photo_info) {
+        # If we don't have info, create basic entry
+        $photo_cache{photo}{$photo_id} = {
+            last_checked => time(),
+            groups => {},
+            group_count => 0,
+        };
+        $photo_info = $photo_cache{photo}{$photo_id};
+    }
+    
+    # Check if group is not already in the list
+    unless (exists $photo_info->{groups}{$group_id}) {
+        $photo_info->{groups}{$group_id} = 1;
+        $photo_info->{group_count}++;
+        $photo_info->{last_checked} = time();
+        save_photo_cache();
+        
+        debug1("Cache updated locally: Photo $photo_id now has " . 
+               $photo_info->{group_count} . " groups (added group $group_id)");
+    }
+}
+
+# Removes photo from cache to force refresh on next selection
+# Useful when photo reaches maximum groups (60) and we need fresh data
+# Parameters: $photo_id (string)
+# No return value
+sub invalidate_photo_cache {
+    my ($photo_id) = @_;
+    
+    if (exists $photo_cache{photo}{$photo_id}) {
+        delete $photo_cache{photo}{$photo_id};
+        save_photo_cache();
+        debug1("Cache invalidated for photo $photo_id - will be refreshed on next selection");
+    }
+}
+
+# Removes all cached pages for a specific set
+# Useful when set contents may have changed significantly
+# Parameters: $set_id (string)
+# No return value
+sub invalidate_set_cache {
+    my ($set_id) = @_;
+    
+    if (exists $photo_cache{sets}{$set_id}) {
+        my $page_count = scalar keys %{$photo_cache{sets}{$set_id}};
+        delete $photo_cache{sets}{$set_id};
+        save_photo_cache();
+        debug1("Cache invalidated for set $set_id - $page_count pages removed");
+    }
 }
 
 # --- Short Cooldown Routine (20-60 min) ---
 # Applies temporary non-persistent cooldowns for various blocking conditions
 # These cooldowns are stored in memory only and lost on script restart
+# Parameters: $group_id (string), $group_name (string), $reason (string)
+# No return value
 sub apply_short_cooldown {
     my ($group_id, $group_name, $reason) = @_;
     my $min_delay = 20 * 60;  # 1200 seconds (20 minutes)
@@ -514,7 +867,8 @@ sub apply_short_cooldown {
 
 # Filters groups based on current cooldown history (rate limits and moderated post times)
 # Returns arrayref of groups that are currently eligible for posting
-
+# Parameters: $groups_ref (arrayref of group hashes)
+# Returns: arrayref of filtered groups
 sub filter_blocked_groups {
     my ($groups_ref) = @_;
     my $now = time();
@@ -607,6 +961,8 @@ sub filter_blocked_groups {
 # --- Core Logic Subroutines ---
 
 # Prints the script usage and help message with detailed examples
+# Called when -h or --help flag is provided or when required parameters are missing
+# No parameters, no return value
 sub show_usage {
     print "Usage: $0 [OPTIONS]";
     print "\nMAIN OPERATION MODES:";
@@ -666,12 +1022,14 @@ sub show_usage {
 
 # Filters the main group list based on command-line patterns and static eligibility checks
 # Returns arrayref of groups that match all filter criteria
+# Parameters: $groups_ref (arrayref), $group_match_rx (regex), $exclude_match_rx (regex)
+# Returns: arrayref of filtered groups
 sub filter_eligible_groups {
     my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
     return [ grep {
         my $g = $_;
         my $gname = $g->{name} || '';
-        # 1. Must be able to post statically
+        # 1. Must be able to post statically (can_post flag from group info)
         $g->{can_post} == 1 &&
         # 2. Must not be persistently excluded (unless --ignore-excludes is set)
         ( $ignore_excludes || !defined $g->{excluded} ) &&
@@ -683,7 +1041,8 @@ sub filter_eligible_groups {
 }
 
 # Initializes the Flickr API and retrieves the user NSID
-# Returns 1 on success, 0 on failure
+# Calculates max age timestamp if the max-age option is used
+# Returns: 1 on success, 0 on failure
 sub init_flickr {
     # Calculate max age timestamp if the max-age option is used
     if (defined $max_age_years) {
@@ -707,7 +1066,8 @@ sub init_flickr {
 
 # Refreshes the list of groups, fetches detailed info (like moderation status and throttle)
 # for each, and saves the updated list to the groups file.
-# Returns arrayref of updated groups on success, cached list on failure
+# Returns: arrayref of updated groups on success, cached list on failure
+# Parameters: $old_groups_ref (arrayref of old groups, optional)
 sub update_and_store_groups {
     my $old_groups_ref = shift;
     $old_groups_ref = load_groups() // [] unless 'ARRAY' eq ref $old_groups_ref;
@@ -752,6 +1112,9 @@ sub update_and_store_groups {
         my $remaining = $throttle->{remaining} // 0;
         my $can_post_static = $photos_ok && $limit_mode ne 'disabled';
         
+        # NEW: Get photo_limit_opt_out flag (groups that ignore 60-photo limit)
+        my $photo_limit_opt_out = $data->{photo_limit_opt_out} // 0;
+        
         my $entry = {
             timestamp     => $timestamp_epoch,
             id            => $gid,
@@ -764,6 +1127,7 @@ sub update_and_store_groups {
             remaining     => $remaining + 0,
             can_post      => $can_post_static ? 1 : 0,
             role          => $g_raw->{admin} ? "admin" : $g_raw->{moderator} ? "moderator" : "member",
+            photo_limit_opt_out => $photo_limit_opt_out ? 1 : 0,  # NEW FIELD
         };
         
         # Preserve existing persistent exclusion status
@@ -777,6 +1141,7 @@ sub update_and_store_groups {
 
 # Manages persistent group exclusions based on command-line flags (--clean, --persistent)
 # Returns arrayref of updated groups
+# Called before main loop when exclusion-related flags are used
 sub update_local_group_exclusions {
     my $groups_ref = load_groups() // [];
     my @results;
@@ -820,6 +1185,8 @@ sub update_local_group_exclusions {
 }
 
 # Fetches and prints detailed real-time information for groups matching the -g pattern (dump mode)
+# Parameters: $groups_list_ref (arrayref), $group_match_rx (regex)
+# No return value
 sub dump_matching_group_info {
     my ($groups_list_ref, $group_match_rx) = @_;
     
@@ -858,6 +1225,7 @@ sub dump_matching_group_info {
 
 # Checks the real-time posting status and throttle limit for a group
 # Returns hashref with current posting eligibility and limit information
+# Parameters: $group_id (string), $group_name (string)
 sub check_posting_status {
     my ($group_id, $group_name) = @_;
     
@@ -883,6 +1251,7 @@ sub check_posting_status {
 
 # Selects a random photo from the list of matching photosets, using cached set pages
 # Returns hashref with photo data or undef if no suitable photo found
+# Parameters: $sets_ref (arrayref of photoset hashes)
 sub find_random_photo {
     my ($sets_ref) = @_;
     my $PHOTOS_PER_PAGE = 250;
@@ -915,19 +1284,20 @@ sub find_random_photo {
             splice(@pages_to_try, $page_index, 1);
             $used_pages_by_set{$set_id}->{$random_page} = 1;
 
-            # --- Photo Page Cache Logic ---
-            my $cache_key = "$set_id:$random_page";
+            # --- Photo Page Cache Logic (USING HIERARCHICAL STRUCTURE) ---
             my $photos_on_page; 
 
             # 1. Check if valid data exists in cache
-            if (exists $photo_cache{$cache_key}) {
-                my $entry = $photo_cache{$cache_key};
+            if (exists $photo_cache{sets}{$set_id}{$random_page}) {
+                my $entry = $photo_cache{sets}{$set_id}{$random_page};
                 if (time() - $entry->{timestamp} < CACHE_EXPIRATION) {
                     debug1("CACHE HIT: Using cached photos for Set $set_id, Page $random_page");
                     $photos_on_page = $entry->{photos};
                 } else {
                     debug1("CACHE EXPIRED: Entry for Set $set_id, Page $random_page is too old.");
-                    delete $photo_cache{$cache_key};
+                    delete $photo_cache{sets}{$set_id}{$random_page};
+                    # If set becomes empty, remove it too
+                    delete $photo_cache{sets}{$set_id} unless keys %{$photo_cache{sets}{$set_id}};
                 }
             }
 
@@ -953,8 +1323,8 @@ sub find_random_photo {
                 $photos_on_page = $response->as_hash->{photoset}->{photo} || [];
                 $photos_on_page = [ $photos_on_page ] unless ref $photos_on_page eq 'ARRAY';
 
-                # Cache the result
-                $photo_cache{$cache_key} = {
+                # Cache the result (in hierarchical structure)
+                $photo_cache{sets}{$set_id}{$random_page} = {
                     timestamp => time(),
                     photos => $photos_on_page
                 };
@@ -977,7 +1347,7 @@ sub find_random_photo {
                 
                 debug("Trying photo index $random_photo_index (ID: $selected_photo->{id}, Title: $selected_photo->{title})");
 
-                # Filter by max age
+                # Filter by max age (if -a flag used)
                 if (defined $max_age_timestamp && $selected_photo->{datetaken}) {
                     my $date_taken = $selected_photo->{datetaken};
                     my $photo_timestamp;
@@ -1010,52 +1380,9 @@ sub find_random_photo {
     return;
 }
 
-# Checks if a specific photo is already a member of a group, utilizing persistent cache
-# for a 30-day validity period.
-# Returns 1 if photo is in group, 0 if not, undef on API failure
-sub is_photo_in_group {
-    my ($photo_id, $group_id) = @_;
-    my $cache_key = "groupcheck:$photo_id:$group_id";
-    my $now = time();
-
-    # 1. Check persistent cache for membership status
-    if (exists $photo_cache{$cache_key}) {
-        my $entry = $photo_cache{$cache_key};
-        if ($now - $entry->{timestamp} < CACHE_EXPIRATION) {
-            # Cache Hit: return cached result
-            debug1("CACHE HIT: Group membership for $photo_id in $group_id is " . ($entry->{is_member} ? 'YES' : 'NO'));
-            return $entry->{is_member};
-        } else {
-            # Cache Expired: delete entry and continue to API call
-            debug1("CACHE EXPIRED: Group membership entry for $cache_key is too old.");
-            delete $photo_cache{$cache_key};
-        }
-    }
-    
-    # 2. API Call: Check all contexts for the photo
-    my $response = flickr_api_call('flickr.photos.getAllContexts', { photo_id => $photo_id });
-    unless (defined $response) { 
-        alert("Failed to check photo context for $photo_id. API failed.");
-        return undef; # Return undef on API failure
-    }
-    
-    # Check if the group_id is present in the list of pools/groups
-    my $photo_pools = $response->as_hash->{pool} || [];
-    $photo_pools = [ $photo_pools ] unless ref $photo_pools eq 'ARRAY';
-    my $is_present = grep { $_->{id} eq $group_id } @$photo_pools;
-
-    # 3. Cache the result for 30 days
-    my $is_present_bool = $is_present ? 1 : 0;
-    $photo_cache{$cache_key} = {
-        timestamp => $now,
-        is_member => $is_present_bool,
-    };
-    save_photo_cache();
-    
-    return $is_present_bool; 
-}
-
 # Prints a formatted report of all groups and their eligibility status (list mode)
+# Parameters: $groups_ref (arrayref), $group_match_rx (regex), $exclude_match_rx (regex)
+# No return value
 sub list_groups_report {
     my ($groups_ref, $group_match_rx, $exclude_match_rx) = @_;
     print "\n" . get_timestamp() . colored(" ### Group Status Report (Data from $groups_file) ###", 'bold');
@@ -1064,9 +1391,9 @@ sub list_groups_report {
     my @eligible = @{ filter_eligible_groups($groups_ref, $group_match_rx, $exclude_match_rx) };
     my %eligible_map = map { $_->{id} => 1 } @eligible;
     
-    printf "%-40s | %-12s | %-12s | %-8s | %-12s | %s\n", 
-        "**Group Name**", "**Can Post**", "**Limit Mode**", "**Remain**", "**Moderated**", "**Exclusion/Filter Status**";
-    print "-" x 111;
+    printf "%-40s | %-12s | %-12s | %-8s | %-12s | %-10s | %s\n", 
+        "**Group Name**", "**Can Post**", "**Limit Mode**", "**Remain**", "**Moderated**", "**Opt-Out**", "**Exclusion/Filter Status**";
+    print "-" x 122;
 
     foreach my $g (sort { $a->{name} cmp $b->{name} } @$groups_ref) {
         my $status;
@@ -1084,12 +1411,13 @@ sub list_groups_report {
             $status = "NOT ELIGIBLE";
         }
         
-        printf "%-40s | %-12s | %-12s | %-12s | %-12s | %s\n",
+        printf "%-40s | %-12s | %-12s | %-12s | %-12s | %-10s | %s\n",
             $g->{name},
             $g->{can_post} ? "Yes" : "No",
             $g->{limit_mode} || 'none',
             $g->{remaining} || '-',
             $g->{moderated} ? "Yes" : "No",
+            $g->{photo_limit_opt_out} ? "Yes" : "No",
             $status;
     }
 }
@@ -1134,6 +1462,7 @@ unless ($list_groups || $dump) {
 }
 
 # Handle local group exclusion updates before main loop starts
+# This modifies the groups file if -c or -p flags are used
 my $force_refresh = $clean_excludes || $persistent_exclude;
 if ($force_refresh) {
     unless (init_flickr()) {
@@ -1181,6 +1510,7 @@ if ($list_groups) {
 # ----------------------------------------------------
 # 3. MASTER RESTART LOOP (Main Posting Flow)
 # The entire posting logic is wrapped in this loop for self-healing/backoff.
+# Automatically restarts on fatal errors with exponential backoff.
 # ----------------------------------------------------
 my $restart_attempt = 0;
 
@@ -1231,7 +1561,7 @@ RESTART_LOOP: while (1) {
         POST_CYCLE_LOOP: while (1) { 
             
             # Check for stale group cache and refresh if needed
-            if ($groups_list_ref->[0] and time() - $groups_list_ref->[0]->{->timestamp} > GROUP_UPDATE_INTERVAL) {
+            if ($groups_list_ref->[0] and time() - $groups_list_ref->[0]->{timestamp} > GROUP_UPDATE_INTERVAL) {
                 debug("Group list cache expired. Initiating update.");
                 
                 my $new_groups_ref = update_and_store_groups();
@@ -1270,18 +1600,24 @@ RESTART_LOOP: while (1) {
             my ($photo_id, $photo_title, $set_title, $set_id) = @$photo_data{qw/id title set_title set_id/};
             info("Selected photo '$photo_title' from set '$set_title' for this cycle.");
             
-            # --- NOVO BLOCO: Lógica de Foto Saturada vs. Grupos Limitados (com persistência) ---
-            if (exists $photo_saturated{$photo_id}) {
-                my $total_groups = scalar(@current_groups);
-                
-                @current_groups = grep { !exists $runtime_limited_groups{$_->{id}} } @current_groups;
-                
-                my $removed = $total_groups - scalar(@current_groups);
-                if ($removed > 0) {
-                    alert("Foto saturada detectada → removidos $removed grupos com limite do ciclo atual.");
-                }
+            # --- PRELIMINARY CHECK: Remove groups where photo is already a member ---
+            
+            @current_groups = @{filter_groups_where_photo_not_in($photo_id, $photo_title, \@current_groups)};
+            
+            unless (@current_groups) {
+                alert("Photo '$photo_title' already in all available groups. Searching for new photo after.");
+                sleep 10;
+                next POST_CYCLE_LOOP;
             }
-            # ----------------------------------------------------------------
+            
+            # --- NEW BLOCK: Proactive filter based on photo_limit_opt_out ---
+            @current_groups = @{ filter_groups_by_photo_limit($photo_id, \@current_groups) };
+            
+            unless (@current_groups) {
+                alert("No groups available after photo limit filter. Searching for new photo.");
+                sleep 10;
+                next POST_CYCLE_LOOP;
+            }
 
             # 5. Main Posting Attempt Loop (Try the selected photo on groups)
             POST_ATTEMPT_LOOP: while (@current_groups) { 
@@ -1305,7 +1641,7 @@ RESTART_LOOP: while (1) {
                     $selected_group->{remaining} = $status->{remaining};
                     unless ($status->{can_post}) { 
                         debug("Skipping '$group_name' (Dynamic Block: $status->{limit_mode} or Remaining=0)");
-                        # Cooldown Curto para Dynamic Block
+                        # Short Cooldown for Dynamic Block
                         apply_short_cooldown($group_id, $group_name, "Dynamic Block ($status->{limit_mode} / $status->{remaining} remaining)"); 
                         splice(@current_groups, $random_index, 1); 
                         next POST_ATTEMPT_LOOP;
@@ -1323,21 +1659,9 @@ RESTART_LOOP: while (1) {
                 $photos = [ $photos ] unless ref $photos eq 'ARRAY';
                 if (@$photos and $photos->[0]->{owner} eq $user_nsid) { 
                     debug("Skipping '$group_name' (You are last poster)");
-                    # Cooldown Curto para Last Poster
+                    # Short Cooldown for Last Poster
                     apply_short_cooldown($group_id, $group_name, "Last Poster Detected"); 
                     splice(@current_groups, $random_index, 1); 
-                    next POST_ATTEMPT_LOOP;
-                }
-                
-                # Check if photo is ALREADY IN GROUP (Uses the 30-day persistent cache)
-                my $in_group_check = is_photo_in_group($photo_id, $group_id);
-                unless (defined $in_group_check) { 
-                    alert("Failed to check group membership for photo '$photo_title' in group '$group_name'. Removing from current cycle.");
-                    splice(@current_groups, $random_index, 1);
-                    next POST_ATTEMPT_LOOP;
-                } elsif ($in_group_check) { 
-                    debug("Photo '$photo_title' already in '$group_name'.");
-                    splice(@current_groups, $random_index, 1); # Remove group from this photo's cycle
                     next POST_ATTEMPT_LOOP;
                 }
                 
@@ -1364,12 +1688,12 @@ RESTART_LOOP: while (1) {
                             info("Added " . $detailed_log_message . ". Status: Moderated - Pending Queue.");
                         } else {
                             success("Added " . $detailed_log_message);
+                            
+                            # Update cache locally after successful posting (non-moderated)
+                            update_photo_cache_after_posting($photo_id, $group_id);
                         }
-                        
-                        # Immediately update the group membership cache (status: member)
-                        update_group_membership_cache($photo_id, $group_id, 1) unless $moderated_pending;
 
-                        # Aplicar Cooldown Curto (20-60 min) para grupos não moderados e sem limite
+                        # Apply Short Cooldown (20-60 min) for non-moderated groups without limits
                         if ($selected_group->{moderated} == 0 && $selected_group->{limit_mode} eq 'none' ) {
                             apply_short_cooldown($group_id, $group_name, "Successful Post (Non-Limited)");
                         }
@@ -1413,19 +1737,9 @@ RESTART_LOOP: while (1) {
                         } elsif ($error_msg =~ /Content not allowed/i) {
                             alert("Group '$group_name' rejected photo due to 'Content not allowed'. Removing group from cycle.");
                         } elsif ($error_msg =~ /Photo in maximum number of pools/i) {
-                            alert("Limit Triggered: Photo '$photo_title' is saturated AND Group '$group_name' has limits.");
-                            
-                            # Persistente no cache de 30 dias
-                            $photo_cache{"saturated:$photo_id"} = { timestamp => time() };
-                            $photo_cache{"limited_group:$group_id"} = { timestamp => time() };
-                            save_photo_cache();
-
-                            # Também atualiza as hashes em memória para uso imediato
-                            $photo_saturated{$photo_id} = 1;
-                            $runtime_limited_groups{$group_id} = 1;
-                            
-                            splice(@current_groups, $random_index, 1);
-                            next POST_ATTEMPT_LOOP;
+                            # Remove photo from cache to force refresh on next selection
+                            invalidate_photo_cache($photo_id);
+                            alert("Photo $photo_id reached group limit. Cache invalidated.");
                         }
                         # On any final failure, the group is removed from the current photo's cycle
                         splice(@current_groups, $random_index, 1); 
@@ -1434,7 +1748,7 @@ RESTART_LOOP: while (1) {
                 }
             } 
 
-            # Apply random delay between posting attempts
+            # Apply random delay between posting attempts (0 to $timeout_max seconds)
             my $sleep_time = int(rand($timeout_max + 1));
             info("Pausing for $sleep_time seconds.");
             sleep $sleep_time;
