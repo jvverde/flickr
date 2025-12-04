@@ -22,6 +22,7 @@
 # - Proactive photo limit filtering (60-group maximum with opt-out groups)
 # - Automated group list refresh every 24 hours
 # - Colored terminal output with timestamps and context information
+# - Cache inconsistency detection and automatic recovery
 #
 # DEPENDENCIES:
 # - Perl 5.10+
@@ -73,6 +74,7 @@
 # - Short-term cooldowns (20-60 minutes) are memory-only and lost on restart
 # - Rate-limit and moderated group cooldowns persist across script runs
 # - Script auto-restarts on fatal errors with exponential backoff up to 24 hours
+# - Cache inconsistency detection: automatically invalidates cache when "Photo already in pool" error occurs
 #
 
 use strict;
@@ -317,6 +319,12 @@ sub flickr_api_call {
             # Photo already in maximum number of pools (60 groups limit)
             if ($method eq 'flickr.groups.pools.add' and $error =~ /Photo in maximum number of pools/i) {
                 error("Non-retryable Error: '$error'. Aborting...");
+                return $response; 
+            }
+            
+            # Photo already in pool (non-retryable, indicates cache inconsistency)
+            if ($method eq 'flickr.groups.pools.add' and $error =~ /Photo already in pool/i) {
+                alert("Non-retryable Error: '$error'. Photo cache is outdated. Aborting retries.");
                 return $response; 
             }
 
@@ -729,19 +737,19 @@ sub filter_groups_by_photo_limit {
     if ($current_count < 60) {
         # First try to use groups that RESPECT the limit
         if (@groups_respecting_limit) {
-            debug1("Photo $photo_id has $current_count groups (<60) - using " . 
+            debug("Photo $photo_id has $current_count groups (<60) - using " . 
                    scalar(@groups_respecting_limit) . " groups that respect the limit (photo_limit_opt_out=0)");
             return \@groups_respecting_limit;
         } 
         # If no groups respect the limit, use those that ignore it
         elsif (@groups_ignoring_limit) {
-            debug1("Photo $photo_id has $current_count groups (<60) - no groups respect the limit. " .
+            debug("Photo $photo_id has $current_count groups (<60) - no groups respect the limit. " .
                    "Using " . scalar(@groups_ignoring_limit) . " groups that ignore the limit (photo_limit_opt_out=1)");
             return \@groups_ignoring_limit;
         }
         # If no groups of either type
         else {
-            debug1("Photo $photo_id has $current_count groups (<60) - no groups available after filter");
+            debug("Photo $photo_id has $current_count groups (<60) - no groups available after filter");
             return [];
         }
     }
@@ -749,7 +757,7 @@ sub filter_groups_by_photo_limit {
     else {
         # Can only use groups that IGNORE the limit
         if (@groups_ignoring_limit) {
-            debug1("Photo $photo_id has $current_count groups (>=60) - using " . 
+            debug("Photo $photo_id has $current_count groups (>=60) - using " . 
                    scalar(@groups_ignoring_limit) . " groups that ignore the limit (photo_limit_opt_out=1)");
             return \@groups_ignoring_limit;
         } else {
@@ -821,6 +829,8 @@ sub invalidate_photo_cache {
         delete $photo_cache{photo}{$photo_id};
         save_photo_cache();
         debug1("Cache invalidated for photo $photo_id - will be refreshed on next selection");
+    } else {
+        debug1("Photo $photo_id not found in cache, nothing to invalidate");
     }
 }
 
@@ -836,6 +846,8 @@ sub invalidate_set_cache {
         delete $photo_cache{sets}{$set_id};
         save_photo_cache();
         debug1("Cache invalidated for set $set_id - $page_count pages removed");
+    } else {
+        debug1("Set $set_id not found in cache, nothing to invalidate");
     }
 }
 
@@ -1018,6 +1030,7 @@ sub show_usage {
     print "  - Group list cache refreshes automatically every 24 hours";
     print "  - Photo cache persists for 30 days with automatic expiration";
     print "  - Script automatically restarts on fatal errors with exponential backoff";
+    print "  - Cache inconsistency detection: automatically invalidates cache when 'Photo already in pool' error occurs";
 }
 
 # Filters the main group list based on command-line patterns and static eligibility checks
@@ -1604,6 +1617,9 @@ RESTART_LOOP: while (1) {
             
             @current_groups = @{filter_groups_where_photo_not_in($photo_id, $photo_title, \@current_groups)};
             
+            # Double-check: Log if we're still trying groups where photo might be (cache could be wrong)
+            debug1("After filtering, " . scalar(@current_groups) . " groups remain where photo '$photo_title' should not be a member.");
+            
             unless (@current_groups) {
                 alert("Photo '$photo_title' already in all available groups. Searching for new photo after.");
                 sleep 10;
@@ -1740,6 +1756,20 @@ RESTART_LOOP: while (1) {
                             # Remove photo from cache to force refresh on next selection
                             invalidate_photo_cache($photo_id);
                             alert("Photo $photo_id reached group limit. Cache invalidated.");
+                        } elsif ($error_msg =~ /Photo already in pool/i) {
+                            # Cache inconsistency detected - photo is already in group but cache doesn't know it
+                            alert("Group '$group_name' says photo already in pool. Cache inconsistency detected.");
+                            
+                            # Force cache invalidation for this photo (only photo->groups section)
+                            # The set cache (photo->sets) remains intact as it only tracks which photos exist in the set
+                            # The problem is specifically in the photo's group membership cache
+                            invalidate_photo_cache($photo_id);
+                            
+                            alert("Photo cache invalidated for $photo_id. Group membership info will be refreshed on next selection.");
+                            
+                            # Remove group from current cycle since photo is already there
+                            splice(@current_groups, $random_index, 1);
+                            next POST_ATTEMPT_LOOP;
                         }
                         # On any final failure, the group is removed from the current photo's cycle
                         splice(@current_groups, $random_index, 1); 
