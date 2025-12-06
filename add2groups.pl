@@ -1345,7 +1345,7 @@ sub find_random_photo {
             }
             
             unless (@$photos_on_page) { 
-                info("Page $random_page returned no public photos.");
+                alert("Page $random_page returned no public photos.");
                 next PAGE_LOOP; 
             }
 
@@ -1635,8 +1635,10 @@ RESTART_LOOP: while (1) {
                 next POST_CYCLE_LOOP;
             }
 
+
             # 5. Main Posting Attempt Loop (Try the selected photo on groups)
             POST_ATTEMPT_LOOP: while (@current_groups) { 
+                info("Go post randomly to any of " . scalar(@current_groups) . " groups");
 
                 my $random_index = int(rand(@current_groups));
                 my $selected_group = $current_groups[$random_index];
@@ -1729,7 +1731,7 @@ RESTART_LOOP: while (1) {
                             if ($limit > 0 && $period_seconds > 0) {
                                 # Calculate randomized pause time based on limit/period
                                 my $base_pause_time = $period_seconds / $limit;
-                                my $random_multiplier = 0.7 + (rand() * 0.4); 
+                                my $random_multiplier = 0.7 + (rand() * 0.6);
                                 my $pause_time = int($base_pause_time * $random_multiplier);
                                 $pause_time = 1 unless $pause_time > 0;
                                 my $wait_until = time() + $pause_time;
