@@ -65,10 +65,10 @@ my $update_count = 0;
 # --- DEFINIÇÃO DE PADRÕES COM qr// (MODIFICADORES APLICADOS NO USO) ---
 
 # 1. Padrão para encontrar a linha do token em qualquer lugar.
-my $token_pattern_qr = qr/^\s*$TOKEN_TO_FIX:=.+/; 
+my $token_pattern_qr = qr/^\s*$TOKEN_TO_FIX:=?.+/; 
 
 # 2. Padrão para verificar se o token JÁ ESTÁ NO FINAL.
-my $token_at_end_pattern_qr = qr/\n*\s*$TOKEN_TO_FIX:=.+\s*$/;
+my $token_at_end_pattern_qr = qr/\n*\s*$TOKEN_TO_FIX:=?.+\s*$/;
 
 # 3. Padrão para referências HASH/ARRAY.
 my $hash_pattern_qr = qr/(?:HASH|ARRAY)\(0x[0-9a-f]+\)/; 
@@ -93,7 +93,7 @@ while ($page <= $total_pages) {
     my $s = $response->as_hash->{photosets}->{photoset};
     $s = [ $s ] unless ref $s eq 'ARRAY';
     my @filtered = @$s; 
-    
+
     if (defined $match) {
         @filtered = grep { $_->{title} =~ /$match/ } @filtered;
     }
@@ -121,6 +121,7 @@ foreach my $set (@$sets) {
 
     # --- Correção 1: Limpar HASH(0x...) ---
     # Aplica-se o modificador /g (global) para substituir todas as ocorrências
+
     if ($description =~ $hash_pattern_qr) {
         $description =~ s/$hash_pattern_qr//g;
         $is_updated = 1;
@@ -131,19 +132,21 @@ foreach my $set (@$sets) {
     # Aplica-se o modificador /m (multiline)
     if ($description =~ /$token_pattern_qr/m) {
         # 2a. Remover a linha do token do corpo principal
-        ($token_line) = $description =~ /($token_pattern_qr)/m; 
+        ($token_line) = $description =~ /($token_pattern_qr)/m;
         $description =~ s/$token_pattern_qr\n?//m;              
         $description =~ s/^\s+|\s+$//g;                      
 
         # 2b. Adicionar a linha do token no final
+        my ($val) = $token_line =~ /.*:=?(.+$)/;
         if ($description) {
-            # Uso de aspas duplas aqui para garantir que "\n\n" é processado como nova linha.
-            $description .= "\n\n" . $token_line;
+            $description .= "\n\n$TOKEN_TO_FIX:=$val";
         } else {
-            $description = $token_line;
+            $description = "$TOKEN_TO_FIX:=$val";
         }
         $is_updated = 1;
         print 'Set \'' . $title . '\': Linha do token \'' . $TOKEN_TO_FIX . ':=...\' movida para o final.';
+    } else {
+        print "NOT match $title";
     }
     
     # Aplicar alterações se houver algo para atualizar

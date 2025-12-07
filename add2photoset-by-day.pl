@@ -273,7 +273,7 @@ foreach my $date (sort keys %date_groups) {
         my $create_response = $flickr->execute_method('flickr.photosets.create', {
             title => $set_title,
             primary_photo_id => $primary_photo_id,
-            description => "$token:B0-00",
+            description => "$token:=B0-00",
         });
         # Warn and skip if photoset creation fails
         warn "Error creating set '$set_title': $create_response->{error_message}" and next unless $create_response->{success};
