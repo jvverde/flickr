@@ -52,8 +52,8 @@ GetOptions(
 );
 
 if ($help) {
-    print <<'END';
-Usage: perl flickr_orderNO_scientific_safe.pl -i PREFIX [OPTIONS]
+    print <<END;
+Usage: perl $0 -i PREFIX [OPTIONS]
 
 Functionality:
   Processes only properly formatted scientific name sets
@@ -74,8 +74,8 @@ Options:
   -h, --help            This help
 
 Examples:
-  perl flickr_orderNO_scientific_safe.pl -i IOC151
-  perl flickr_orderNO_scientific_safe.pl -i IOC151 --force   # titles will be corrected
+  perl $0 -i IOC151
+  perl $0 -i IOC151 --force   # titles will be corrected
 END
     exit;
 }
