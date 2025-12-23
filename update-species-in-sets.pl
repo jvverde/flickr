@@ -128,7 +128,7 @@ my $flickr      = Flickr::API->import_storable_config($config_file);
 #------------------------------------------------------------------------------
 # Compile regex filter
 #------------------------------------------------------------------------------
-my $re = qr/$filter_pattern/i;
+my $re = qr/$filter_pattern/;
 
 #------------------------------------------------------------------------------
 # Step 1: Retrieve all photosets that match the filter
@@ -317,13 +317,14 @@ foreach my $photoset (@$photosets) {
         # No summary block found — append a new one at the end.
         $new_desc .= "\n\n$delim_start\n$summary\n$delim_end\n";
     }
-
+    $new_desc =~ s/\Q$delim_start\E.*?\Q$delim_end\E//s if $total_species < 2;
+    next if $new_desc eq $current_desc;
     #-- 2.6 Update description on Flickr or just show (dry-run)
     if ($dry_run) {
         print "DRY RUN: Would update description for $photoset->{title} to:\n$new_desc";
     } else {
         # remove leading/trailing newlines
-        $new_desc =~ s/^\n+|\n+$//g;
+        $new_desc =~ s/^[\n\s]+|[\s\n]+$//g;
 
         my $edit_response =
           $flickr->execute_method('flickr.photosets.editMeta', {
