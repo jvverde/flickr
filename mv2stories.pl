@@ -143,7 +143,7 @@ sub contains_other_names_block {
     return 0 unless defined $desc;
 
     return 1 if $desc =~ /Logos Dictionary/i;
-    return 1 if $desc =~ /My\s+creation\s+.*\d+/i;
+    return 1 if $desc =~ /\d+\. /m;
     return 1 if $desc =~ /bighugelabs\.com/i;
     return 1 if $desc =~ /flagrantdisregard\.com/i;
     return 1 if $desc =~ /Excerpt from a conversation with ChatGPT/i;
